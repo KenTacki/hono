@@ -56,13 +56,6 @@ extendedKeyUsage     = serverAuth, clientAuth
 # for the particular components (hono, qdrouter, auth-server etc.)
 # They are listed separately because this is only way to specify individual subjectAltNames for them
 
-[ req_ext_hono-messaging ]
-
-subjectKeyIdentifier = hash
-keyUsage             = keyAgreement,keyEncipherment,digitalSignature
-extendedKeyUsage     = serverAuth, clientAuth
-subjectAltName       = DNS.1:hono-service-messaging,DNS.2:hono-service-messaging.hono,DNS.3:localhost
-
 [ req_ext_qdrouter ]
 
 subjectKeyIdentifier = hash
@@ -84,12 +77,12 @@ keyUsage             = keyAgreement,keyEncipherment,digitalSignature
 extendedKeyUsage     = serverAuth, clientAuth
 subjectAltName       = DNS.1:hono-service-device-registry,DNS.2:hono-service-device-registry.hono,DNS.3:localhost
 
-[ req_ext_rest-adapter ]
+[ req_ext_http-adapter ]
 
 subjectKeyIdentifier = hash
 keyUsage             = keyAgreement,keyEncipherment,digitalSignature
 extendedKeyUsage     = serverAuth, clientAuth
-subjectAltName       = DNS.1:hono-adapter-rest-vertx,DNS.2:hono-adapter-rest-vertx.hono,DNS.3:localhost
+subjectAltName       = DNS.1:hono-adapter-http-vertx,DNS.2:hono-adapter-http-vertx.hono,DNS.3:localhost
 
 [ req_ext_mqtt-adapter ]
 
@@ -98,6 +91,20 @@ keyUsage             = keyAgreement,keyEncipherment,digitalSignature
 extendedKeyUsage     = serverAuth, clientAuth
 subjectAltName       = DNS.1:hono-adapter-mqtt-vertx,DNS.2:hono-adapter-mqtt-vertx.hono,DNS.3:localhost
 
+[ req_ext_amqp-adapter ]
+
+subjectKeyIdentifier = hash
+keyUsage             = keyAgreement,keyEncipherment,digitalSignature
+extendedKeyUsage     = serverAuth, clientAuth
+subjectAltName       = DNS.1:hono-adapter-amqp-vertx,DNS.2:hono-adapter-amqp-vertx.hono,DNS.3:localhost
+
+[ req_ext_kura-adapter ]
+
+subjectKeyIdentifier = hash
+keyUsage             = keyAgreement,keyEncipherment,digitalSignature
+extendedKeyUsage     = serverAuth, clientAuth
+subjectAltName       = DNS.1:hono-adapter-kura,DNS.2:hono-adapter-kura.hono,DNS.3:localhost
+
 [ req_ext_artemis ]
 
 subjectKeyIdentifier = hash
@@ -105,4 +112,10 @@ keyUsage             = keyAgreement,keyEncipherment,digitalSignature
 extendedKeyUsage     = serverAuth, clientAuth
 subjectAltName       = DNS.1:hono-artemis,DNS.2:hono-artemis.hono,DNS.3:localhost
 
+[ req_ext_coap-adapter ]
+
+subjectKeyIdentifier = hash
+keyUsage             = keyAgreement,keyEncipherment,digitalSignature
+extendedKeyUsage     = serverAuth, clientAuth
+subjectAltName       = DNS.1:hono-adapter-coap-vertx,DNS.2:hono-adapter-coap-vertx.hono,DNS.3:localhost
 

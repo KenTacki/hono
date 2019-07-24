@@ -1,21 +1,22 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth.impl;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.*;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -52,11 +53,11 @@ public class FileBasedAuthenticationServiceTest {
     @BeforeClass
     public static void loadPermissions() throws IOException {
 
-        AuthTokenHelper tokenFactory = mock(AuthTokenHelper.class);
+        final AuthTokenHelper tokenFactory = mock(AuthTokenHelper.class);
         when(tokenFactory.createToken(anyString(), any(Authorities.class))).thenReturn(TOKEN);
         when(tokenFactory.getTokenLifetime()).thenReturn(TOKEN_LIFETIME);
 
-        AuthenticationServerConfigProperties props = new AuthenticationServerConfigProperties();
+        final AuthenticationServerConfigProperties props = new AuthenticationServerConfigProperties();
         props.setPermissionsPath(new ClassPathResource("authentication-service-test-permissions.json"));
 
         authService = new FileBasedAuthenticationService();
@@ -65,18 +66,36 @@ public class FileBasedAuthenticationServiceTest {
         authService.loadPermissions();
     }
 
+    /**
+     * Verifies that the service fails verification of plain credentials if no
+     * username is given.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainFailsForMissingUsername(final TestContext ctx) {
 
         authService.verifyPlain(null, null, "pwd", ctx.asyncAssertFailure());
     }
 
+    /**
+     * Verifies that the service fails verification of plain credentials if no
+     * password is given.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainFailsForMissingPassword(final TestContext ctx) {
 
         authService.verifyPlain(null, "user", null, ctx.asyncAssertFailure());
     }
 
+    /**
+     * Verifies that the service successfully issues a token on successful verification
+     * of credentials.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainSucceedsForMatchingPassword(final TestContext ctx) {
 
@@ -86,15 +105,28 @@ public class FileBasedAuthenticationServiceTest {
         }));
     }
 
+    /**
+     * Verifies that the service grants the requested <em>authorization identity</em> 
+     * on successful verification of credentials.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainGrantsAuthorizationId(final TestContext ctx) {
 
-        authService.verifyPlain("userB", "rest-adapter@HONO", "secret", ctx.asyncAssertSuccess(res -> {
+        authService.verifyPlain("userB", "http-adapter@HONO", "secret", ctx.asyncAssertSuccess(res -> {
             assertThat(res.getName(), is("userB"));
             assertThat(res.getToken(), is(TOKEN));
         }));
     }
 
+    /**
+     * Verifies that the service refuses to grant the requested <em>authorization identity</em>
+     * on successful verification of credentials if the user is not authorized to assume another
+     * identity than the authentication identity.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainRefusesAuthorizationId(final TestContext ctx) {
 
@@ -104,21 +136,39 @@ public class FileBasedAuthenticationServiceTest {
         }));
     }
 
+    /**
+     * Verifies that the service refuses to grant an non-existing <em>authorization identity</em>
+     * on successful verification of credentials.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainRefusesNonExistingAuthorizationId(final TestContext ctx) {
 
-        authService.verifyPlain("userC", "rest-adapter@HONO", "secret", ctx.asyncAssertSuccess(res -> {
-            assertThat(res.getName(), is("rest-adapter@HONO"));
+        authService.verifyPlain("userC", "http-adapter@HONO", "secret", ctx.asyncAssertSuccess(res -> {
+            assertThat(res.getName(), is("http-adapter@HONO"));
             assertThat(res.getToken(), is(TOKEN));
         }));
     }
 
+    /**
+     * Verifies that the service fails verification of external credentials if no
+     * subject DN is given.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyExternalFailsForMissingSubjectDn(final TestContext ctx) {
 
         authService.verifyExternal(null, null, ctx.asyncAssertFailure());
     }
 
+    /**
+     * Verifies that the service successfully issues a token on successful verification
+     * of external credentials.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyExternalGrantsCommonName(final TestContext ctx) {
 
@@ -128,6 +178,12 @@ public class FileBasedAuthenticationServiceTest {
         }));
     }
 
+    /**
+     * Verifies that the service grants the requested <em>authorization identity</em> 
+     * on successful verification of external credentials.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyExternalGrantsAuthorizationId(final TestContext ctx) {
 
@@ -137,6 +193,12 @@ public class FileBasedAuthenticationServiceTest {
         }));
     }
 
+    /**
+     * Verifies that the service refuses to grant an non-existing <em>authorization identity</em>
+     * on successful verification of external credentials.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyExternalRefusesNonExistingAuthorizationId(final TestContext ctx) {
 
@@ -146,6 +208,13 @@ public class FileBasedAuthenticationServiceTest {
         }));
     }
 
+    /**
+     * Verifies that the service refuses to grant the requested <em>authorization identity</em>
+     * on successful verification of external credentials if the user is not authorized to assume another
+     * identity than the authentication identity.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyExternalRefusesAuthorizationId(final TestContext ctx) {
 
@@ -155,6 +224,12 @@ public class FileBasedAuthenticationServiceTest {
         }));
     }
 
+    /**
+     * Verifies that the token issued by the service on successful verification
+     * of credentials contains the user's authorities for executing operations.
+     * 
+     * @param ctx The vert.x test context.
+     */
     @Test
     public void testVerifyPlainAddsAuthoritiesForOperations(final TestContext ctx) {
 

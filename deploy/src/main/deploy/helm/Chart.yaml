@@ -1,0 +1,13 @@
+apiVersion: v1
+# Version of the Helm chart, by default, this will be the Maven project version
+version: ${helm.app-version}
+# Version of the application being deployed by the chart
+appVersion: ${helm.app-version}
+name: eclipse-hono
+description: Scalable IoT messaging platform
+keywords:
+  - IoT
+  - messaging
+home: https://www.eclipse.org/hono/
+sources:
+  - https://github.com/eclipse/hono

@@ -1,36 +1,58 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.deviceregistry;
 
-import io.vertx.core.VertxOptions;
-import io.vertx.core.dns.AddressResolverOptions;
+import java.util.Optional;
 
+import org.eclipse.hono.auth.HonoPasswordEncoder;
+import org.eclipse.hono.auth.SpringBasedHonoPasswordEncoder;
 import org.eclipse.hono.config.ApplicationConfigProperties;
+import org.eclipse.hono.config.ServerConfig;
 import org.eclipse.hono.config.ServiceConfigProperties;
+import org.eclipse.hono.config.VertxProperties;
+import org.eclipse.hono.service.HealthCheckServer;
+import org.eclipse.hono.service.VertxBasedHealthCheckServer;
 import org.eclipse.hono.service.credentials.CredentialsAmqpEndpoint;
-import org.eclipse.hono.service.registration.RegistrationAssertionHelper;
-import org.eclipse.hono.service.registration.RegistrationAssertionHelperImpl;
-import org.eclipse.hono.service.registration.RegistrationHttpEndpoint;
+
+import org.eclipse.hono.service.deviceconnection.DeviceConnectionAmqpEndpoint;
+
+import org.eclipse.hono.service.management.credentials.CredentialsManagementHttpEndpoint;
+import org.eclipse.hono.service.management.credentials.CredentialsManagementService;
+import org.eclipse.hono.service.management.device.DeviceManagementHttpEndpoint;
+import org.eclipse.hono.service.management.device.DeviceManagementService;
+import org.eclipse.hono.service.management.tenant.TenantManagementHttpEndpoint;
+
+import org.eclipse.hono.service.management.tenant.TenantManagementService;
+
+import org.eclipse.hono.service.metric.MetricsTags;
 import org.eclipse.hono.service.registration.RegistrationAmqpEndpoint;
+import org.eclipse.hono.service.tenant.TenantAmqpEndpoint;
 import org.eclipse.hono.util.Constants;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.config.ObjectFactoryCreatingFactoryBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-
-import io.vertx.core.Vertx;
 import org.springframework.context.annotation.Scope;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.spring.autoconfigure.MeterRegistryCustomizer;
+import io.opentracing.Tracer;
+import io.opentracing.contrib.tracerresolver.TracerResolver;
+import io.opentracing.noop.NoopTracerFactory;
+import io.vertx.core.Vertx;
+import io.vertx.core.VertxOptions;
 
 /**
  * Spring Boot configuration for the Device Registry application.
@@ -39,23 +61,45 @@ import org.springframework.context.annotation.Scope;
 @Configuration
 public class ApplicationConfig {
 
-    private static final String BEAN_NAME_DEVICE_REGISTRY_AMQP_SERVER = "deviceRegistryAmqpServer";
-    private static final String BEAN_NAME_DEVICE_REGISTRY_REST_SERVER = "deviceRegistryRestServer";
-
     /**
-     * Gets the singleton Vert.x instance to be used by Hono.
+     * Exposes a Vert.x instance as a Spring bean.
+     * <p>
+     * This method creates new Vert.x default options and invokes
+     * {@link VertxProperties#configureVertx(VertxOptions)} on the object returned
+     * by {@link #vertxProperties()}.
      * 
-     * @return the instance.
+     * @return The Vert.x instance.
      */
     @Bean
     public Vertx vertx() {
-        VertxOptions options = new VertxOptions()
-                .setWarningExceptionTime(1500000000)
-                .setAddressResolverOptions(new AddressResolverOptions()
-                        .setCacheNegativeTimeToLive(0) // discard failed DNS lookup results immediately
-                        .setCacheMaxTimeToLive(0) // support DNS based service resolution
-                        .setQueryTimeout(1000));
-        return Vertx.vertx(options);
+        return Vertx.vertx(vertxProperties().configureVertx(new VertxOptions()));
+    }
+
+    /**
+     * Exposes configuration properties for Vert.x.
+     * 
+     * @return The properties.
+     */
+    @ConfigurationProperties("hono.vertx")
+    @Bean
+    public VertxProperties vertxProperties() {
+        return new VertxProperties();
+    }
+
+    /**
+     * Exposes an OpenTracing {@code Tracer} as a Spring Bean.
+     * <p>
+     * The Tracer will be resolved by means of a Java service lookup.
+     * If no tracer can be resolved this way, the {@code NoopTracer} is
+     * returned.
+     * 
+     * @return The tracer.
+     */
+    @Bean
+    public Tracer getTracer() {
+
+        return Optional.ofNullable(TracerResolver.resolveTracer())
+                .orElse(NoopTracerFactory.create());
     }
 
     /**
@@ -70,6 +114,17 @@ public class ApplicationConfig {
     }
 
     /**
+     * Exposes properties for configuring the health check as a Spring bean.
+     *
+     * @return The health check configuration properties.
+     */
+    @Bean
+    @ConfigurationProperties(prefix = "hono.health-check")
+    public ServerConfig healthCheckConfigProperties() {
+        return new ServerConfig();
+    }
+
+    /**
      * Gets properties for configuring the Device Registry's AMQP 1.0 endpoint.
      * 
      * @return The properties.
@@ -78,7 +133,7 @@ public class ApplicationConfig {
     @Bean
     @ConfigurationProperties(prefix = "hono.registry.amqp")
     public ServiceConfigProperties amqpProperties() {
-        ServiceConfigProperties props = new ServiceConfigProperties();
+        final ServiceConfigProperties props = new ServiceConfigProperties();
         return props;
     }
 
@@ -105,28 +160,25 @@ public class ApplicationConfig {
     }
 
     /**
-     * Creates a new instance of the Device Registry's AMQP 1.0 endpoint.
-     * <p>
-     * The endpoint is used for accessing both, the <em>Device Registration</em> and the <em>Credentials</em> API.
-     * 
-     * @return The endpoint.
+     * Creates a new instance of an AMQP 1.0 protocol handler for Hono's <em>Tenant</em> API.
+     *
+     * @return The handler.
      */
-    @Bean(BEAN_NAME_DEVICE_REGISTRY_AMQP_SERVER)
+    @Bean
     @Scope("prototype")
-    public DeviceRegistryAmqpServer deviceRegistryAmqpServer(){
-        return new DeviceRegistryAmqpServer();
+    public TenantAmqpEndpoint tenantAmqpEndpoint() {
+        return new TenantAmqpEndpoint(vertx());
     }
 
     /**
-     * Gets a factory for creating instances of the AMQP 1.0 based endpoint.
-     * 
-     * @return The factory.
+     * Creates a new instance of an AMQP 1.0 protocol handler for Hono's <em>Device Connection</em> API.
+     *
+     * @return The handler.
      */
     @Bean
-    public ObjectFactoryCreatingFactoryBean deviceRegistryAmqpServerFactory() {
-        ObjectFactoryCreatingFactoryBean factory = new ObjectFactoryCreatingFactoryBean();
-        factory.setTargetBeanName(BEAN_NAME_DEVICE_REGISTRY_AMQP_SERVER);
-        return factory;
+    @Scope("prototype")
+    public DeviceConnectionAmqpEndpoint deviceConnectionAmqpEndpoint() {
+        return new DeviceConnectionAmqpEndpoint(vertx());
     }
 
     /**
@@ -138,7 +190,7 @@ public class ApplicationConfig {
     @Bean
     @ConfigurationProperties(prefix = "hono.registry.rest")
     public ServiceConfigProperties restProperties() {
-        ServiceConfigProperties props = new ServiceConfigProperties();
+        final ServiceConfigProperties props = new ServiceConfigProperties();
         return props;
     }
 
@@ -149,33 +201,33 @@ public class ApplicationConfig {
      */
     @Bean
     @Scope("prototype")
-    public RegistrationHttpEndpoint registrationHttpEndpoint() {
-        return new RegistrationHttpEndpoint(vertx());
+    @ConditionalOnBean(DeviceManagementService.class)
+    public DeviceManagementHttpEndpoint registrationHttpEndpoint() {
+        return new DeviceManagementHttpEndpoint(vertx());
     }
 
     /**
-     * Creates a new instance of the Device Registry's REST endpoint.
-     * <p>
-     * The endpoint is used for accessing both, the <em>Device Registration</em> and the <em>Credentials</em> API.
-     * 
-     * @return The endpoint.
-     */
-    @Bean(BEAN_NAME_DEVICE_REGISTRY_REST_SERVER)
-    @Scope("prototype")
-    public DeviceRegistryRestServer deviceRegistryRestServer(){
-        return new DeviceRegistryRestServer();
-    }
-
-    /**
-     * Gets a factory for creating instances of the REST based endpoint.
-     * 
-     * @return The factory.
+     * Creates a new instance of an HTTP protocol handler for Hono's <em>Credentials</em> API.
+     *
+     * @return The handler.
      */
     @Bean
-    public ObjectFactoryCreatingFactoryBean deviceRegistryRestServerFactory() {
-        ObjectFactoryCreatingFactoryBean factory = new ObjectFactoryCreatingFactoryBean();
-        factory.setTargetBeanName(BEAN_NAME_DEVICE_REGISTRY_REST_SERVER);
-        return factory;
+    @Scope("prototype")
+    @ConditionalOnBean(CredentialsManagementService.class)
+    public CredentialsManagementHttpEndpoint credentialsHttpEndpoint() {
+        return new CredentialsManagementHttpEndpoint(vertx());
+    }
+
+    /**
+     * Creates a new instance of an HTTP protocol handler for Hono's <em>Tenant</em> API.
+     *
+     * @return The handler.
+     */
+    @Bean
+    @Scope("prototype")
+    @ConditionalOnBean(TenantManagementService.class)
+    public TenantManagementHttpEndpoint tenantHttpEndpoint() {
+        return new TenantManagementHttpEndpoint(vertx());
     }
 
     /**
@@ -203,19 +255,59 @@ public class ApplicationConfig {
     }
 
     /**
-     * Exposes a factory for JWTs asserting a device's registration status as a Spring bean.
+     * Gets properties for configuring {@code FileBasedTenantsService} which implements
+     * the <em>Tenants</em> API.
      *
-     * @return The bean.
+     * @return The properties.
      */
     @Bean
-    @Qualifier("signing")
-    public RegistrationAssertionHelper registrationAssertionFactory() {
-        ServiceConfigProperties amqpProps = amqpProperties();
-        FileBasedRegistrationConfigProperties serviceProps = serviceProperties();
-        if (!serviceProps.getSigning().isAppropriateForCreating() && amqpProps.getKeyPath() != null) {
-            // fall back to TLS configuration
-            serviceProps.getSigning().setKeyPath(amqpProps.getKeyPath());
-        }
-        return RegistrationAssertionHelperImpl.forSigning(vertx(), serviceProps.getSigning());
+    @ConfigurationProperties(prefix = "hono.tenant.svc")
+    public FileBasedTenantsConfigProperties tenantsProperties() {
+        return new FileBasedTenantsConfigProperties();
+    }
+
+    /**
+     * Gets properties for configuring {@code InMemoryDeviceConnectionService} which implements
+     * the <em>Device Connection</em> API.
+     *
+     * @return The properties.
+     */
+    @Bean
+    @ConfigurationProperties(prefix = "hono.device-connection.svc")
+    public MapBasedDeviceConnectionsConfigProperties deviceConnectionsProperties() {
+        return new MapBasedDeviceConnectionsConfigProperties();
+    }
+
+    /**
+     * Customizer for meter registry.
+     * 
+     * @return The new meter registry customizer.
+     */
+    @Bean
+    public MeterRegistryCustomizer<MeterRegistry> commonTags() {
+
+        return r -> r.config().commonTags(MetricsTags.forService(Constants.SERVICE_NAME_DEVICE_REGISTRY));
+
+    }
+
+    /**
+     * Exposes the health check server as a Spring bean.
+     *
+     * @return The health check server.
+     */
+    @Bean
+    public HealthCheckServer healthCheckServer() {
+        return new VertxBasedHealthCheckServer(vertx(), healthCheckConfigProperties());
+    }
+
+    /**
+     * Exposes a password encoder to use for encoding clear text passwords
+     * and for matching password hashes.
+     * 
+     * @return The encoder.
+     */
+    @Bean
+    public HonoPasswordEncoder passwordEncoder() {
+        return new SpringBasedHonoPasswordEncoder(credentialsProperties().getMaxBcryptIterations());
     }
 }

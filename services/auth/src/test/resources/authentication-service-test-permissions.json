@@ -18,6 +18,10 @@
         "activities": [ "EXECUTE" ]
       },
       {
+        "operation": "registration/*:get",
+        "activities": [ "EXECUTE" ]
+      },
+      {
         "resource": "credentials/*",
         "activities": [ "READ", "WRITE" ]
       },
@@ -48,7 +52,7 @@
     ]
   },
   "users": {
-    "rest-adapter@HONO": {
+    "http-adapter@HONO": {
       "mechanism": "PLAIN",
       "password": "secret",
       "authorities": [ "hono-component", "protocol-adapter", "device-manager" ]
@@ -72,3 +76,4 @@
     }
   }
 }
+

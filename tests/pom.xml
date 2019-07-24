@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Copyright (c) 2016 Bosch Software Innovations GmbH. All rights reserved. This program and the accompanying 
-  materials are made available under the terms of the Eclipse Public License v1.0 which accompanies this distribution, 
-  and is available at http://www.eclipse.org/legal/epl-v10.html Contributors: Bosch Software Innovations GmbH - initial 
-  creation -->
+<!--
+    Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
+   
+    See the NOTICE file(s) distributed with this work for additional
+    information regarding copyright ownership.
+   
+    This program and the accompanying materials are made available under the
+    terms of the Eclipse Public License 2.0 which is available at
+    http://www.eclipse.org/legal/epl-2.0
+   
+    SPDX-License-Identifier: EPL-2.0
+ -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <parent>
     <groupId>org.eclipse.hono</groupId>
     <artifactId>hono-bom</artifactId>
-    <version>0.5-M9-SNAPSHOT</version>
+    <version>1.0-M6-SNAPSHOT</version>
     <relativePath>../bom</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
@@ -18,18 +26,52 @@
   <name>Hono Integration Tests</name>
   <description>Integration tests verifying Hono's APIs.
 Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch Router and ActiveMQ Artemis broker).</description>
+  <url>https://www.eclipse.org/hono</url>
 
   <properties>
     <maven.javadoc.skip>true</maven.javadoc.skip>
     <maven.source.skip>true</maven.source.skip>
     <maven.install.skip>true</maven.install.skip>
     <gpg.skip>true</gpg.skip>
+    <service.startup.timeout>120000</service.startup.timeout>
+    <link.establishment.timeout>5000</link.establishment.timeout>
+    <flow.latency>1000</flow.latency>
+    <!-- use minimum number of iterations in order to speed up test execution --> 
+    <max.bcrypt.iterations>4</max.bcrypt.iterations>
+    <max.event-loop.execute-time>5000</max.event-loop.execute-time>
+    <!-- should be set to false if testing against a registry that doesn't support GW mode -->
+    <deviceregistry.supportsGatewayMode>true</deviceregistry.supportsGatewayMode>
+    <hono.amqp-network.host>hono-dispatch-router.hono</hono.amqp-network.host>
+    <hono.registration.host>hono-service-device-registry.hono</hono.registration.host>
+    <hono.auth.host>hono-service-auth.hono</hono.auth.host>
+    <default.java.options>
+      -XX:MinRAMPercentage=80
+      -XX:MaxRAMPercentage=80
+      -javaagent:/opt/hono/agent/org.jacoco.agent.jar=destfile=/opt/hono/jacoco.result/jacoco.part
+    </default.java.options>
+    <amqp.java.options></amqp.java.options>
+    <http.java.options></http.java.options>
+    <mqtt.java.options></mqtt.java.options>
+    <deviceregistry.image>hono-service-device-registry</deviceregistry.image>
   </properties>
 
   <dependencies>
     <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-junit5</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.vintage</groupId>
+      <artifactId>junit-vintage-engine</artifactId>
     </dependency>
     <dependency>
       <groupId>org.eclipse.hono</groupId>
@@ -39,6 +81,14 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
     <dependency>
       <groupId>org.eclipse.hono</groupId>
       <artifactId>hono-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.hono</groupId>
+      <artifactId>hono-service-base</artifactId>
+      <version>${project.version}</version>
+      <classifier>tests</classifier>
+      <type>test-jar</type>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -66,13 +116,70 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
     </dependency>
     <dependency>
       <groupId>org.eclipse.hono</groupId>
-      <artifactId>hono-dispatch-router</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.hono</groupId>
       <artifactId>hono-demo-certs</artifactId>
     </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-mqtt</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-tcnative-boringssl-static</artifactId>
+      <version>${netty.tcnative.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>hono-adapter-amqp-vertx</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>hono-adapter-http-vertx</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>hono-adapter-mqtt-vertx</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.californium</groupId>
+      <artifactId>californium-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.californium</groupId>
+      <artifactId>scandium</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>${project.basedir}/src/test/resources</directory>
+        <filtering>true</filtering>
+        <targetPath>${project.build.directory}/resources</targetPath>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-checkstyle-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
 
   <profiles>
     <profile>
@@ -85,8 +192,8 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
             <executions>
               <execution>
                 <!--
-                  Execution and configuration for copying certificates from related module
-                  to "target/classes" folder so that we can include them in the image.
+                  Execution and configuration for copying certificates and config files
+                  from related modules "target/config" folder so that we can include them in the image.
                  -->
                 <id>copy_demo_certs</id>
                 <phase>generate-resources</phase>
@@ -94,13 +201,37 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
                   <goal>unpack-dependencies</goal>
                 </goals>
                 <configuration>
-                  <includeArtifactIds>hono-demo-certs,hono-dispatch-router</includeArtifactIds>
-                  <outputDirectory>${project.build.directory}/config</outputDirectory>
-                  <includes>*.pem,qpid/*,sasl/*,META-INF/fabric8/**/*</includes>
-                  <useSubDirectoryPerArtifact>true</useSubDirectoryPerArtifact>
+                  <includeArtifactIds>hono-demo-certs</includeArtifactIds>
+                  <outputDirectory>${project.build.directory}/certs</outputDirectory>
+                  <includes>
+                    *.pem,
+                    *.p12,
+                    *.jks
+                  </includes>
+                  <useSubDirectoryPerArtifact>false</useSubDirectoryPerArtifact>
                   <stripClassifier>true</stripClassifier>
                   <stripVersion>true</stripVersion>
                   <excludeTransitive>true</excludeTransitive>
+                </configuration>
+              </execution>
+              <execution>
+                <id>copy_jacoco_agent</id>
+                <phase>generate-resources</phase>
+                <goals>
+                  <goal>copy</goal>
+                </goals>
+                <configuration>
+                  <artifactItems>
+                    <artifactItem>
+                      <groupId>org.jacoco</groupId>
+                      <artifactId>org.jacoco.agent</artifactId>
+                      <version>${jacoco.version}</version>
+                      <classifier>runtime</classifier>
+                    </artifactItem>
+                  </artifactItems>
+                  <outputDirectory>${project.build.directory}/agent</outputDirectory>
+                  <stripVersion>true</stripVersion>
+                  <stripClassifier>true</stripClassifier>
                 </configuration>
               </execution>
             </executions>
@@ -111,134 +242,228 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
             <configuration>
               <verbose>true</verbose>
               <autoCreateCustomNetworks>true</autoCreateCustomNetworks>
-              <startParallel>true</startParallel>
+              <startParallel>false</startParallel>
               <images>
                 <!-- ##### Authentication service ##### -->
                 <image>
-                  <name>eclipsehono/hono-service-auth-test</name>
+                  <name>${docker.image.org-name}/hono-service-auth-test</name>
                   <alias>auth</alias>
                   <build>
-                    <from>eclipsehono/hono-service-auth:${project.version}</from>
+                    <from>${docker.image.org-name}/hono-service-auth:${project.version}</from>
                     <assembly>
                       <mode>dir</mode>
-                      <basedir>/etc/hono</basedir>
+                      <basedir>/</basedir>
                       <inline>
                         <id>config</id>
                         <fileSets>
                           <fileSet>
-                            <directory>${project.basedir}/src/test/resources/auth</directory>
-                            <outputDirectory>.</outputDirectory>
+                            <directory>${project.build.directory}/resources/auth</directory>
+                            <outputDirectory>etc/hono</outputDirectory>
                             <includes>
                               <include>*</include>
                             </includes>
                           </fileSet>
                           <fileSet>
-                            <directory>${project.build.directory}/config/hono-demo-certs-jar</directory>
-                            <outputDirectory>certs</outputDirectory>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>etc/hono/certs</outputDirectory>
                             <includes>
                               <include>auth-server-*.pem</include>
                             </includes>
                           </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/agent</directory>
+                            <outputDirectory>opt/hono/agent</outputDirectory>
+                          </fileSet>
                         </fileSets>
                       </inline>
                     </assembly>
+                    <runCmds>
+                      <runCmd>install -m 0777 -d /opt/hono/jacoco.result</runCmd>
+                      <runCmd>touch /opt/hono/jacoco.result/jacoco.part</runCmd>
+                      <runCmd>chmod 0666 /opt/hono/jacoco.result/jacoco.part</runCmd>
+                    </runCmds>
                   </build>
                   <run>
+                    <ports>
+                      <port>+auth.ip:auth.amqp.port:5672</port>
+                      <port>+auth.ip:auth.health.port:${vertx.health.port}</port>
+                    </ports>
                     <network>
                       <mode>custom</mode>
                       <name>hono</name>
                       <alias>hono-service-auth.hono</alias>
                     </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
                     <env>
                       <LOGGING_CONFIG>file:///etc/hono/logback-spring.xml</LOGGING_CONFIG>
                       <SPRING_CONFIG_LOCATION>file:///etc/hono/</SPRING_CONFIG_LOCATION>
                       <SPRING_PROFILES_ACTIVE>authentication-impl,prod</SPRING_PROFILES_ACTIVE>
+                      <_JAVA_OPTIONS>${default.java.options}</_JAVA_OPTIONS>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
                     </env>
                     <log>
                       <prefix>AUTH</prefix>
                       <color>cyan</color>
                     </log>
+                    <volumes>
+                      <bind>
+                        <volume>${project.build.directory}/jacoco.result/auth:/opt/hono/jacoco.result:z</volume>
+                      </bind>
+                    </volumes>
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <http>
+                        <method>GET</method>
+                        <url>http://${auth.ip}:${auth.health.port}/readiness</url>
+                        <status>200..299</status>
+                      </http>
+                    </wait>
                   </run>
                 </image>
                 <!-- ##### Device Registration service ##### -->
                 <image>
-                  <name>eclipsehono/hono-service-device-registry-test</name>
+                  <name>${docker.image.org-name}/hono-service-device-registry-test</name>
                   <alias>device-registry</alias>
                   <build>
-                    <from>eclipsehono/hono-service-device-registry:${project.version}</from>
+                    <from>${docker.image.org-name}/${deviceregistry.image}:${project.version}</from>
                     <assembly>
                       <mode>dir</mode>
-                      <basedir>/etc/hono</basedir>
+                      <basedir>/</basedir>
                       <inline>
                         <id>config</id>
                         <fileSets>
                           <fileSet>
-                            <directory>${project.basedir}/src/test/resources/deviceregistry</directory>
-                            <outputDirectory>.</outputDirectory>
+                            <directory>${project.build.directory}/resources/deviceregistry</directory>
+                            <outputDirectory>etc/hono</outputDirectory>
                             <includes>
                               <include>*</include>
                             </includes>
                           </fileSet>
                           <fileSet>
-                            <directory>${project.build.directory}/config/hono-demo-certs-jar</directory>
-                            <outputDirectory>certs</outputDirectory>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>etc/hono/certs</outputDirectory>
                             <includes>
                               <include>device-registry-*.pem</include>
                               <include>auth-server-cert.pem</include>
                               <include>trusted-certs.pem</include>
                             </includes>
                           </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/agent</directory>
+                            <outputDirectory>opt/hono/agent</outputDirectory>
+                          </fileSet>
                         </fileSets>
                       </inline>
                     </assembly>
+                    <runCmds>
+                      <runCmd>install -m 0777 -d /opt/hono/jacoco.result</runCmd>
+                      <runCmd>touch /opt/hono/jacoco.result/jacoco.part</runCmd>
+                      <runCmd>chmod 0666 /opt/hono/jacoco.result/jacoco.part</runCmd>
+                    </runCmds>
                   </build>
                   <run>
                     <ports>
                       <port>+deviceregistry.ip:deviceregistry.amqp.port:5672</port>
+                      <port>+deviceregistry.ip:deviceregistry.http.port:8080</port>
+                      <port>+deviceregistry.ip:deviceregistry.health.port:${vertx.health.port}</port>
                     </ports>
                     <network>
                       <mode>custom</mode>
                       <name>hono</name>
                       <alias>hono-service-device-registry.hono</alias>
                     </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
                     <env>
                       <LOGGING_CONFIG>file:///etc/hono/logback-spring.xml</LOGGING_CONFIG>
                       <SPRING_CONFIG_LOCATION>file:///etc/hono/</SPRING_CONFIG_LOCATION>
                       <SPRING_PROFILES_ACTIVE>prod</SPRING_PROFILES_ACTIVE>
+                      <_JAVA_OPTIONS>${default.java.options}</_JAVA_OPTIONS>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
                     </env>
                     <log>
                       <prefix>REGISTRY</prefix>
                       <color>yellow</color>
                     </log>
+                    <volumes>
+                      <bind>
+                        <volume>${project.build.directory}/jacoco.result/registry:/opt/hono/jacoco.result:z</volume>
+                      </bind>
+                    </volumes>
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <http>
+                        <method>GET</method>
+                        <url>http://${deviceregistry.ip}:${deviceregistry.health.port}/readiness</url>
+                        <status>200..299</status>
+                      </http>
+                    </wait>
                   </run>
                 </image>
                 <!-- ##### ActiveMQ Artemis message broker ##### -->
                 <image>
-                  <name>eclipsehono/hono-artemis:${project.version}</name>
+                  <name>${docker.image.org-name}/hono-artemis-test:${project.version}</name>
                   <alias>artemis</alias>
+                  <build>
+                    <from>${artemis.image.name}</from>
+                    <ports>
+                      <port>5671</port>
+                    </ports>
+                    <entryPoint>
+                      <shell>/opt/artemis/bin/artemis run xml:/etc/hono/artemis-bootstrap.xml</shell>
+                    </entryPoint>
+                    <assembly>
+                      <mode>dir</mode>
+                      <basedir>/etc/hono</basedir>
+                      <inline>
+                        <id>config</id>
+                        <fileSets>
+                          <fileSet>
+                            <directory>${project.build.directory}/resources/artemis</directory>
+                            <outputDirectory>.</outputDirectory>
+                            <includes>
+                              <include>*</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>.</outputDirectory>
+                            <includes>
+                              <include>artemisKeyStore.p12</include>
+                              <include>trustStore.jks</include>
+                            </includes>
+                          </fileSet>
+                        </fileSets>
+                      </inline>
+                    </assembly>
+                  </build>
                   <run>
                     <ports>
-                      <port>+broker.ip:broker.amqp.port:5672</port>
+                      <port>+broker.ip:broker.amqp.port:5671</port>
                     </ports>
                     <network>
                       <mode>custom</mode>
                       <name>hono</name>
                       <alias>hono-artemis.hono</alias>
                     </network>
+                    <env>
+                      <ARTEMIS_CONFIGURATION>/etc/hono</ARTEMIS_CONFIGURATION>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
+                    </env>
                     <log>
                       <prefix>ARTEMIS</prefix>
                       <color>magenta</color>
                     </log>
-                    <!--
-                    <env>
-                       <PN_TRACE_FRM>1</PN_TRACE_FRM>
-                    </env>
-                    -->
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <log>.*(Server is now live)$</log>
+                    </wait>
                   </run>
                 </image>
                 <!-- ##### Qpid Dispatch Router ##### -->
                 <image>
-                  <name>eclipsehono/hono-dispatch-router-test:${project.version}</name>
+                  <name>${docker.image.org-name}/hono-dispatch-router-test:${project.version}</name>
                   <alias>qdrouter</alias>
                   <build>
                     <from>${dispatch-router.image.name}</from>
@@ -251,32 +476,24 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
                       <exec>
                         <arg>/sbin/qdrouterd</arg>
                         <arg>-c</arg>
-                        <arg>/run/secrets/qdrouterd-with-broker.json</arg>
+                        <arg>/etc/hono/qdrouterd-with-broker.json</arg>
                       </exec>
                     </cmd>
                     <assembly>
                       <mode>dir</mode>
-                      <basedir>/run/secrets</basedir>
+                      <basedir>/etc/hono</basedir>
                       <inline>
                         <id>config</id>
                         <fileSets>
                           <fileSet>
-                            <directory>${project.build.directory}/config/hono-dispatch-router-jar/qpid</directory>
+                            <directory>${project.build.directory}/resources/qpid</directory>
                             <outputDirectory>.</outputDirectory>
                             <includes>
-                              <include>qdrouterd-with-broker.json</include>
+                              <include>*</include>
                             </includes>
                           </fileSet>
                           <fileSet>
-                            <directory>${project.build.directory}/config/hono-dispatch-router-jar/sasl</directory>
-                            <outputDirectory>.</outputDirectory>
-                            <includes>
-                              <include>qdrouterd.sasldb</include>
-                              <include>qdrouter-sasl.conf</include>
-                            </includes>
-                          </fileSet>
-                          <fileSet>
-                            <directory>${project.build.directory}/config/hono-demo-certs-jar</directory>
+                            <directory>${project.build.directory}/certs</directory>
                             <outputDirectory>.</outputDirectory>
                             <includes>
                               <include>qdrouter-*.pem</include>
@@ -296,42 +513,296 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
                       <name>hono</name>
                       <alias>hono-dispatch-router.hono</alias>
                     </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
                     <log>
                       <prefix>QPID</prefix>
                       <color>blue</color>
                     </log>
-                    <!--
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <log>.*(Listening on 0.0.0.0:5673)$</log>
+                    </wait>
                     <env>
-                       <PN_TRACE_FRM>1</PN_TRACE_FRM>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
                     </env>
-                    -->
                   </run>
                 </image>
-                <!-- ##### Messaging service ##### -->
+                <!-- ##### HTTP adapter ##### -->
                 <image>
-                  <name>eclipsehono/hono-service-messaging-test</name>
-                  <alias>messaging</alias>
+                  <name>${docker.image.org-name}/hono-adapter-http-test</name>
+                  <alias>http-adapter</alias>
                   <build>
-                    <from>eclipsehono/hono-service-messaging:${project.version}</from>
+                    <from>${docker.image.org-name}/hono-adapter-http-vertx:${project.version}</from>
                     <assembly>
                       <mode>dir</mode>
-                      <basedir>/etc/hono</basedir>
+                      <basedir>/</basedir>
                       <inline>
                         <id>config</id>
+                        <dependencySets>
+                          <dependencySet>
+                            <includes>
+                              <include>io.netty:netty-tcnative-boringssl-static</include>
+                            </includes>
+                            <outputDirectory>opt/hono/extensions</outputDirectory>
+                          </dependencySet>
+                        </dependencySets>
                         <fileSets>
                           <fileSet>
-                            <directory>${project.basedir}/src/test/resources/messaging</directory>
-                            <outputDirectory>.</outputDirectory>
+                            <directory>${project.build.directory}/resources/http</directory>
+                            <outputDirectory>etc/hono</outputDirectory>
                             <includes>
                               <include>*</include>
                             </includes>
                           </fileSet>
                           <fileSet>
-                            <directory>${project.build.directory}/config/hono-demo-certs-jar</directory>
-                            <outputDirectory>certs</outputDirectory>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>etc/hono/certs</outputDirectory>
                             <includes>
-                              <include>hono-messaging-*.pem</include>
-                              <include>auth-server-cert.pem</include>
+                              <include>http-adapter-*.pem</include>
+                              <include>trusted-certs.pem</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/agent</directory>
+                            <outputDirectory>opt/hono/agent</outputDirectory>
+                          </fileSet>
+                        </fileSets>
+                      </inline>
+                    </assembly>
+                    <runCmds>
+                      <runCmd>install -m 0777 -d /opt/hono/jacoco.result</runCmd>
+                      <runCmd>touch /opt/hono/jacoco.result/jacoco.part</runCmd>
+                      <runCmd>chmod 0666 /opt/hono/jacoco.result/jacoco.part</runCmd>
+                    </runCmds>
+                  </build>
+                  <run>
+                    <ports>
+                      <port>+http.ip:http.port:8080</port>
+                      <port>https.port:8443</port>
+                      <port>+http.ip:http.health.port:${vertx.health.port}</port>
+                    </ports>
+                    <network>
+                      <mode>custom</mode>
+                      <name>hono</name>
+                      <alias>hono-adapter-http-vertx.hono</alias>
+                    </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
+                    <env>
+                      <LOGGING_CONFIG>file:/etc/hono/logback-spring.xml</LOGGING_CONFIG>
+                      <SPRING_CONFIG_LOCATION>file:/etc/hono/</SPRING_CONFIG_LOCATION>
+                      <SPRING_PROFILES_ACTIVE>prod</SPRING_PROFILES_ACTIVE>
+                      <_JAVA_OPTIONS>${default.java.options} ${http.java.options}</_JAVA_OPTIONS>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
+                    </env>
+                    <log>
+                      <prefix>HTTP</prefix>
+                    </log>
+                    <volumes>
+                      <bind>
+                        <volume>${project.build.directory}/jacoco.result/http:/opt/hono/jacoco.result:z</volume>
+                      </bind>
+                    </volumes>
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <http>
+                        <method>GET</method>
+                        <url>http://${http.ip}:${http.health.port}/readiness</url>
+                        <status>200..299</status>
+                      </http>
+                    </wait>
+                  </run>
+                </image>
+                <!-- ##### MQTT adapter ##### -->
+                <image>
+                  <name>${docker.image.org-name}/hono-adapter-mqtt-test</name>
+                  <alias>mqtt-adapter</alias>
+                  <build>
+                    <from>${docker.image.org-name}/hono-adapter-mqtt-vertx:${project.version}</from>
+                    <assembly>
+                      <mode>dir</mode>
+                      <basedir>/</basedir>
+                      <inline>
+                        <id>config</id>
+                        <dependencySets>
+                          <dependencySet>
+                            <includes>
+                              <include>io.netty:netty-tcnative-boringssl-static</include>
+                            </includes>
+                            <outputDirectory>opt/hono/extensions</outputDirectory>
+                          </dependencySet>
+                        </dependencySets>
+                        <fileSets>
+                          <fileSet>
+                            <directory>${project.build.directory}/resources/mqtt</directory>
+                            <outputDirectory>etc/hono</outputDirectory>
+                            <includes>
+                              <include>*</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>etc/hono/certs</outputDirectory>
+                            <includes>
+                              <include>mqtt-adapter-*.pem</include>
+                              <include>trusted-certs.pem</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/agent</directory>
+                            <outputDirectory>opt/hono/agent</outputDirectory>
+                          </fileSet>
+                        </fileSets>
+                      </inline>
+                    </assembly>
+                    <runCmds>
+                      <runCmd>install -m 0777 -d /opt/hono/jacoco.result</runCmd>
+                      <runCmd>touch /opt/hono/jacoco.result/jacoco.part</runCmd>
+                      <runCmd>chmod 0666 /opt/hono/jacoco.result/jacoco.part</runCmd>
+                    </runCmds>
+                  </build>
+                  <run>
+                    <ports>
+                      <port>+mqtt.ip:mqtt.port:1883</port>
+                      <port>mqtts.port:8883</port>
+                      <port>+mqtt.ip:mqtt.health.port:${vertx.health.port}</port>
+                    </ports>
+                    <network>
+                      <mode>custom</mode>
+                      <name>hono</name>
+                      <alias>hono-adapter-mqtt-vertx.hono</alias>
+                    </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
+                    <env>
+                      <LOGGING_CONFIG>file:///etc/hono/logback-spring.xml</LOGGING_CONFIG>
+                      <SPRING_CONFIG_LOCATION>file:///etc/hono/</SPRING_CONFIG_LOCATION>
+                      <SPRING_PROFILES_ACTIVE>prod</SPRING_PROFILES_ACTIVE>
+                      <_JAVA_OPTIONS>${default.java.options} ${mqtt.java.options}</_JAVA_OPTIONS>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
+                    </env>
+                    <log>
+                      <prefix>MQTT</prefix>
+                    </log>
+                    <volumes>
+                      <bind>
+                        <volume>${project.build.directory}/jacoco.result/mqtt:/opt/hono/jacoco.result:z</volume>
+                      </bind>
+                    </volumes>
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <http>
+                        <method>GET</method>
+                        <url>http://${mqtt.ip}:${mqtt.health.port}/readiness</url>
+                        <status>200..299</status>
+                      </http>
+                    </wait>
+                  </run>
+                </image>
+                <!-- ##### AMQP adapter ##### -->
+                <image>
+                  <name>${docker.image.org-name}/hono-adapter-amqp-test</name>
+                  <alias>amqp-adapter</alias>
+                  <build>
+                    <from>${docker.image.org-name}/hono-adapter-amqp-vertx:${project.version}</from>
+                    <assembly>
+                      <mode>dir</mode>
+                      <basedir>/</basedir>
+                      <inline>
+                        <id>config</id>
+                        <fileSets>
+                          <fileSet>
+                            <directory>${project.build.directory}/resources/amqp</directory>
+                            <outputDirectory>etc/hono</outputDirectory>
+                            <includes>
+                              <include>*</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>etc/hono/certs</outputDirectory>
+                            <includes>
+                              <include>amqp-adapter-*.pem</include>
+                              <include>trusted-certs.pem</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/agent</directory>
+                            <outputDirectory>opt/hono/agent</outputDirectory>
+                          </fileSet>
+                        </fileSets>
+                      </inline>
+                    </assembly>
+                    <runCmds>
+                      <runCmd>install -m 0777 -d /opt/hono/jacoco.result</runCmd>
+                      <runCmd>touch /opt/hono/jacoco.result/jacoco.part</runCmd>
+                      <runCmd>chmod 0666 /opt/hono/jacoco.result/jacoco.part</runCmd>
+                    </runCmds>
+                  </build>
+                  <run>
+                    <ports>
+                      <port>+adapter.amqp.ip:adapter.amqp.port:5672</port>
+                      <port>+adapter.amqps.ip:adapter.amqps.port:5671</port>
+                      <port>+adapter.amqp.ip:adapter.amqp.health.port:${vertx.health.port}</port>
+                    </ports>
+                    <network>
+                      <mode>custom</mode>
+                      <name>hono</name>
+                      <alias>hono-adapter-amqp-vertx.hono</alias>
+                    </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
+                    <env>
+                      <LOGGING_CONFIG>file:///etc/hono/logback-spring.xml</LOGGING_CONFIG>
+                      <SPRING_CONFIG_LOCATION>file:///etc/hono/</SPRING_CONFIG_LOCATION>
+                      <SPRING_PROFILES_ACTIVE>prod</SPRING_PROFILES_ACTIVE>
+                      <_JAVA_OPTIONS>${default.java.options} ${amqp.java.options}</_JAVA_OPTIONS>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
+                    </env>
+                    <log>
+                      <prefix>AMQP</prefix>
+                      <color>RED</color>
+                    </log>
+                    <volumes>
+                      <bind>
+                        <volume>${project.build.directory}/jacoco.result/amqp:/opt/hono/jacoco.result:z</volume>
+                      </bind>
+                    </volumes>
+                    <wait>
+                      <time>${service.startup.timeout}</time>
+                      <http>
+                        <method>GET</method>
+                        <url>http://${adapter.amqp.ip}:${adapter.amqp.health.port}/readiness</url>
+                        <status>200..299</status>
+                      </http>
+                    </wait>
+                  </run>
+                </image>
+                <!-- ##### CoAP adapter ##### -->
+                <image>
+                  <name>${docker.image.org-name}/hono-adapter-coap-test</name>
+                  <alias>coap-adapter</alias>
+                  <build>
+                    <from>${docker.image.org-name}/hono-adapter-coap-vertx:${project.version}</from>
+                    <assembly>
+                      <mode>dir</mode>
+                      <basedir>/</basedir>
+                      <inline>
+                        <id>config</id>
+                        <fileSets>
+                          <fileSet>
+                            <directory>${project.build.directory}/resources/coap</directory>
+                            <outputDirectory>etc/hono</outputDirectory>
+                            <includes>
+                              <include>*</include>
+                            </includes>
+                          </fileSet>
+                          <fileSet>
+                            <directory>${project.build.directory}/certs</directory>
+                            <outputDirectory>etc/hono/certs</outputDirectory>
+                            <includes>
+                              <include>coap-adapter-*.pem</include>
                               <include>trusted-certs.pem</include>
                             </includes>
                           </fileSet>
@@ -341,26 +812,38 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
                   </build>
                   <run>
                     <ports>
-                      <port>+hono.ip:hono.amqp.port:5672</port>
+                      <port>+coap.ip:coap.port:5683/udp</port>
+                      <port>coaps.port:5684/udp</port>
+                      <port>+coap.ip:coap.health.port:${vertx.health.port}</port>
                     </ports>
                     <network>
                       <mode>custom</mode>
                       <name>hono</name>
-                      <alias>hono-service-messaging.hono</alias>
+                      <alias>hono-adapter-coap-vertx.hono</alias>
                     </network>
+                    <memorySwap>-1</memorySwap>
+                    <memory>268435456</memory>
                     <env>
-                      <LOGGING_CONFIG>file:///etc/hono/logback-spring.xml</LOGGING_CONFIG>
-                      <SPRING_CONFIG_LOCATION>file:///etc/hono/</SPRING_CONFIG_LOCATION>
-                      <!--<PN_TRACE_FRM>1</PN_TRACE_FRM>-->
-                      <SPRING_PROFILES_ACTIVE>qpid,prod</SPRING_PROFILES_ACTIVE>
+                      <LOGGING_CONFIG>file:/etc/hono/logback-spring.xml</LOGGING_CONFIG>
+                      <SPRING_CONFIG_LOCATION>file:/etc/hono/</SPRING_CONFIG_LOCATION>
+                      <SPRING_PROFILES_ACTIVE>prod</SPRING_PROFILES_ACTIVE>
+                      <_JAVA_OPTIONS>
+                        -XX:MinRAMPercentage=80
+                        -XX:MaxRAMPercentage=80
+                        ${http.java.options}
+                      </_JAVA_OPTIONS>
+                      <PN_TRACE_FRM>0</PN_TRACE_FRM>
                     </env>
                     <log>
-                      <prefix>MESSAGING</prefix>
-                      <color>green</color>
+                      <prefix>COAP</prefix>
                     </log>
                     <wait>
-                      <log>^.*(Started \w*Application in).*$</log>
-                      <time>40000</time>
+                      <time>${service.startup.timeout}</time>
+                      <http>
+                        <method>GET</method>
+                        <url>http://${coap.ip}:${coap.health.port}/readiness</url>
+                        <status>200..299</status>
+                      </http>
                     </wait>
                   </run>
                 </image>
@@ -381,22 +864,58 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
                 </goals>
               </execution>
               <execution>
-                <id>stop-docker</id>
+                <id>stop-and-remove-docker</id>
                 <phase>post-integration-test</phase>
                 <goals>
                   <goal>stop</goal>
                   <goal>remove</goal>
                 </goals>
+                <configuration>
+                  <removeVolumes>true</removeVolumes>
+                  <removeMode>all</removeMode>
+                </configuration>
               </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <!--
+              - The Maven Antrun plugin has to be defined after the fabric8
+              - plugin so that this plugin's 'post-integration-test' runs
+              - after the containers are stopped. But before the 'verify'
+              - phase of the jacoco extras plugin.
+              -->
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <executions>
               <execution>
-                <id>remove-test-images</id>
-                <phase>post-integration-test</phase>
+                <id>create_dirs</id>
+                <phase>generate-resources</phase>
                 <goals>
-                  <goal>remove</goal>
+                  <goal>run</goal>
                 </goals>
                 <configuration>
-                  <filter>auth,device-registry,messaging,qdrouter</filter>
-                  <removeAll>true</removeAll>
+                  <target>
+                    <mkdir dir="${project.build.directory}/jacoco.result" />
+                    <mkdir dir="${project.build.directory}/jacoco.result/auth" />
+                    <mkdir dir="${project.build.directory}/jacoco.result/registry" />
+                    <mkdir dir="${project.build.directory}/jacoco.result/amqp" />
+                    <mkdir dir="${project.build.directory}/jacoco.result/http" />
+                    <mkdir dir="${project.build.directory}/jacoco.result/mqtt" />
+                  </target>
+                </configuration>
+              </execution>
+              <execution>
+                <id>concat-jacoco-exec</id>
+                <phase>post-integration-test</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target>
+                    <concat destfile="${project.build.directory}/jacoco.exec" append="yes" binary="yes">
+                      <fileset dir="${project.build.directory}/jacoco.result" includes="**/jacoco.part"/>
+                    </concat>
+                  </target>
                 </configuration>
               </execution>
             </executions>
@@ -412,30 +931,81 @@ Test cases are run against Docker images of Hono server + (Apache Qpid Dispatch 
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-failsafe-plugin</artifactId>
             <configuration>
+              <environmentVariables>
+                <PN_TRACE_FRM>0</PN_TRACE_FRM>
+              </environmentVariables>
               <systemProperties>
-                <hono.host>${hono.ip}</hono.host>
-                <hono.amqp.port>${hono.amqp.port}</hono.amqp.port>
+                <auth.host>${auth.ip}</auth.host>
+                <auth.amqp.port>${auth.amqp.port}</auth.amqp.port>
                 <hono.username>hono-client</hono.username>
                 <hono.password>secret</hono.password>
+                <tenant.admin.username>http-adapter@HONO</tenant.admin.username>
+                <tenant.admin.password>http-secret</tenant.admin.password>
                 <downstream.host>${qpid.ip}</downstream.host>
                 <downstream.amqp.port>${qpid.amqp.port}</downstream.amqp.port>
-                <downstream.username>user1@HONO</downstream.username>
-                <downstream.password>pw</downstream.password>
+                <downstream.username>consumer@HONO</downstream.username>
+                <downstream.password>verysecret</downstream.password>
                 <deviceregistry.host>${deviceregistry.ip}</deviceregistry.host>
                 <deviceregistry.amqp.port>${deviceregistry.amqp.port}</deviceregistry.amqp.port>
+                <deviceregistry.http.port>${deviceregistry.http.port}</deviceregistry.http.port>
+                <deviceregistry.supportsGatewayMode>${deviceregistry.supportsGatewayMode}</deviceregistry.supportsGatewayMode>
+                <coap.host>${coap.ip}</coap.host>
+                <coap.port>${coap.port}</coap.port>
+                <coaps.port>${coaps.port}</coaps.port>
+                <http.host>${http.ip}</http.host>
+                <http.port>${http.port}</http.port>
+                <https.port>${https.port}</https.port>
+                <mqtt.host>${mqtt.ip}</mqtt.host>
+                <mqtt.port>${mqtt.port}</mqtt.port>
+                <mqtts.port>${mqtts.port}</mqtts.port>
+                <adapter.amqp.host>${adapter.amqp.ip}</adapter.amqp.host>
+                <adapter.amqp.port>${adapter.amqp.port}</adapter.amqp.port>
+                <adapter.amqps.port>${adapter.amqps.port}</adapter.amqps.port>
+                <trust-store.path>${project.build.directory}/certs/trusted-certs.pem</trust-store.path>
+                <test.env>${test.env}</test.env>
+                <max.bcrypt.iterations>${max.bcrypt.iterations}</max.bcrypt.iterations>
+                <vertx.logger-delegate-factory-class-name>io.vertx.core.logging.SLF4JLogDelegateFactory</vertx.logger-delegate-factory-class-name>
+                <!-- javax.net.debug>ssl:handshake</javax.net.debug-->
               </systemProperties>
               <failIfNoSpecifiedTests>false</failIfNoSpecifiedTests>
-              <test>*IT</test>
+              <excludes>
+                <exclude>org.eclipse.hono.tests.registry.legacy/**IT.java</exclude>
+              </excludes>
             </configuration>
             <executions>
               <execution>
-                <id>run-integration-tests</id>
-                <phase>integration-test</phase>
                 <goals>
                   <goal>integration-test</goal>
+                  <goal>verify</goal>
                 </goals>
               </execution>
             </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!--
+    Test profile for the legacy device registry
+    -->
+    <profile>
+      <id>tests-legacy-device-registry</id>
+      <properties>
+        <deviceregistry.image>hono-service-device-registry-legacy</deviceregistry.image>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <includes>
+                <include>org.eclipse.hono.tests.registry.legacy/**IT.java</include>
+              </includes>
+              <excludes>
+                <exclude>org.eclipse.hono.tests.registry/**IT.java</exclude>
+              </excludes>
+            </configuration>
           </plugin>
         </plugins>
       </build>

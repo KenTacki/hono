@@ -1,339 +1,320 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.jmeter.client;
 
+import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.text.MessageFormat;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.jmeter.samplers.SampleResult;
-import org.eclipse.hono.client.HonoClient;
-import org.eclipse.hono.client.MessageSender;
-import org.eclipse.hono.client.RegistrationClient;
-import org.eclipse.hono.client.impl.HonoClientImpl;
-import org.eclipse.hono.connection.ConnectionFactory;
-import org.eclipse.hono.connection.ConnectionFactoryImpl;
+import org.apache.qpid.proton.message.Message;
+import org.eclipse.hono.client.DownstreamSender;
+import org.eclipse.hono.client.DownstreamSenderFactory;
+import org.eclipse.hono.client.HonoConnection;
+import org.eclipse.hono.client.ServiceInvocationException;
+import org.eclipse.hono.config.ClientConfigProperties;
 import org.eclipse.hono.jmeter.HonoSampler;
 import org.eclipse.hono.jmeter.HonoSenderSampler;
+import org.eclipse.hono.util.MessageHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.vertx.core.Context;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.Vertx;
-import io.vertx.core.json.JsonObject;
-import io.vertx.proton.ProtonClientOptions;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.proton.ProtonDelivery;
+import io.vertx.proton.ProtonHelper;
 
 /**
  * A wrapper around a {@code HonoClient} mapping the client's asynchronous API to the blocking
  * threading model used by JMeter.
  */
-public class HonoSender {
+public class HonoSender extends AbstractClient {
 
+    private static final int MAX_RECONNECT_ATTEMPTS = 3;
     private static final Logger LOGGER = LoggerFactory.getLogger(HonoSender.class);
-    private static final int MAX_MESSAGES_PER_BATCH_SEND = 300;
 
-    private final AtomicBoolean  running = new AtomicBoolean(false);
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final HonoSenderSampler sampler;
+    private final DownstreamSenderFactory downstreamSenderFactory;
+    private final byte[] payload;
+    private final Context ctx;
 
-    private ConnectionFactory  honoConnectionFactory;
-    private HonoClient         honoClient;
+    /**
+     * Creates a new sender for configuration properties.
+     *
+     * @param sampler The configuration properties.
+     */
+    public HonoSender(final HonoSenderSampler sampler) {
 
-    private ConnectionFactory  registrationConnectionFactory;
-    private HonoClient         registrationHonoClient;
-    private RegistrationClient registrationClient;
-
-    private String             token;
-    private MessageSender      messageSender;
-    private Vertx              vertx = Vertx.vertx();
-    private HonoSenderSampler  sampler;
-
-    public HonoSender(final HonoSenderSampler sampler) throws InterruptedException {
+        super();
+        this.ctx = vertx.getOrCreateContext();
         this.sampler = sampler;
+        this.payload = sampler.getData().getBytes(StandardCharsets.UTF_8);
 
         // hono config
-        honoConnectionFactory = ConnectionFactoryImpl.ConnectionFactoryBuilder.newBuilder()
-                .disableHostnameVerification()
-                .host(sampler.getHost())
-                .name(sampler.getContainer())
-                .user(sampler.getUser())
-                .password(sampler.getPwd())
-                .port(Integer.parseInt(sampler.getPort()))
-                .trustStorePath(sampler.getTrustStorePath())
-                .vertx(vertx)
-                .build();
-
-        // registry config
-        registrationConnectionFactory = ConnectionFactoryImpl.ConnectionFactoryBuilder.newBuilder()
-                .disableHostnameVerification()
-                .host(sampler.getRegistryHost())
-                .name(sampler.getContainer())
-                .user(sampler.getRegistryUser())
-                .password(sampler.getRegistryPwd())
-                .port(Integer.parseInt(sampler.getRegistryPort()))
-                .trustStorePath(sampler.getRegistryTrustStorePath())
-                .vertx(vertx)
-                .build();
-
-        LOGGER.debug("create hono sender - tenant: {}  deviceId: {}",sampler.getTenant(),sampler.getDeviceId());
-
-        connectRegistry();
-        createRegistrationClient();
-        createDevice();
-
-        connect();
-        updateAssertion();
-        createSender();
-        running.compareAndSet(false, true);
-        LOGGER.debug("sender active: {}/{} ({})",sampler.getEndpoint(),sampler.getTenant(),Thread.currentThread().getName());
+        final ClientConfigProperties honoProps = new ClientConfigProperties();
+        honoProps.setHostnameVerificationRequired(false);
+        honoProps.setHost(sampler.getHost());
+        honoProps.setPort(sampler.getPortAsInt());
+        honoProps.setName(sampler.getContainer());
+        honoProps.setUsername(sampler.getUser());
+        honoProps.setPassword(sampler.getPwd());
+        honoProps.setTrustStorePath(sampler.getTrustStorePath());
+        honoProps.setReconnectAttempts(MAX_RECONNECT_ATTEMPTS);
+        downstreamSenderFactory = DownstreamSenderFactory.create(HonoConnection.newConnection(vertx, honoProps));
     }
 
-    private void connect() throws InterruptedException {
-        final CountDownLatch connectLatch = new CountDownLatch(1);
-        honoClient = new HonoClientImpl(vertx, honoConnectionFactory);
-        honoClient.connect(new ProtonClientOptions(), connectionHandler -> {
-            if (connectionHandler.failed()) {
-                LOGGER.error("HonoClient.connect() failed", connectionHandler.cause());
-            }
-            connectLatch.countDown();
-        });
-        connectLatch.await();
-    }
+    /**
+     * Starts this sender.
+     * <p>
+     * As part of the startup the sender connects to the AMQP Messaging Network and the
+     * Device Registration service.
+     *
+     * @return A future indicating the outcome of the startup process.
+     */
+    public CompletableFuture<Void> start() {
 
-    private void connectRegistry() throws InterruptedException {
-        final CountDownLatch connectLatch = new CountDownLatch(1);
-        registrationHonoClient = new HonoClientImpl(vertx, registrationConnectionFactory);
-        registrationHonoClient.connect(new ProtonClientOptions(), connectionHandler -> {
-            if (connectionHandler.failed()) {
-                LOGGER.error("HonoClient.connect() failed", connectionHandler.cause());
-            }
-            connectLatch.countDown();
-        });
-        connectLatch.await();
-    }
+        final CompletableFuture<Void> result = new CompletableFuture<>();
+        final String tenant = sampler.getTenant();
+        if (running.compareAndSet(false, true)) {
 
-    private void createRegistrationClient() throws InterruptedException {
-        final CountDownLatch assertionLatch = new CountDownLatch(1);
-        registrationHonoClient.getOrCreateRegistrationClient(sampler.getTenant(), resultHandler -> {
-            if (resultHandler.failed()) {
-                LOGGER.error("HonoClient.getOrCreateRegistrationClient() failed", resultHandler.cause());
-            } else {
-                registrationClient = resultHandler.result();
-            }
-            assertionLatch.countDown();
-        });
-        assertionLatch.await();
-    }
+            ctx.runOnContext(start -> {
+                LOGGER.debug("create hono sender - tenant: {}", sampler.getTenant());
 
-    private void createSender() throws InterruptedException {
-
-        final CountDownLatch senderLatch = new CountDownLatch(1);
-        if (honoClient == null || !honoClient.isConnected()) {
-            connect();
-        }
-
-        if (sampler.getEndpoint().equals(HonoSampler.Endpoint.telemetry.toString())) {
-            honoClient.getOrCreateTelemetrySender(sampler.getTenant(), resultHandler -> {
-                if (resultHandler.failed()) {
-                    LOGGER.error("HonoClient.getOrCreateTelemetrySender() failed", resultHandler.cause());
-                } else {
-                    messageSender = resultHandler.result();
-                }
-                senderLatch.countDown();
-            });
-        } else {
-            honoClient.getOrCreateEventSender(sampler.getTenant(), resultHandler -> {
-                if (resultHandler.failed()) {
-                    LOGGER.error("HonoClient.getOrCreateEventSender() failed", resultHandler.cause());
-                } else {
-                    messageSender = resultHandler.result();
-                }
-                senderLatch.countDown();
-            });
-        }
-        senderLatch.await();
-    }
-
-    public void send(final SampleResult sampleResult, final String deviceId, final boolean waitOnCredits) throws InterruptedException {
-
-        if (messageSender == null) {
-            LOGGER.warn("messsage sender is null, trying to create it lazily ...");
-            createSender();
-        }
-
-        try {
-            if (messageSender != null) {
-
-                final AtomicInteger messagesSent = new AtomicInteger(0);
-                final AtomicLong bytesSent = new AtomicLong(0);
-                final long messageLength = sampler.getData().getBytes(StandardCharsets.UTF_8).length;
-
-                // defaults
-                sampleResult.setResponseMessage(MessageFormat.format("{0}/{1}/{2}", sampler.getEndpoint(), sampler.getTenant(), deviceId));
-                // sampleResult.setResponseData(sampler.getData().getBytes());
-                // start sample
-                sampleResult.sampleStart();
-
-                if (waitOnCredits) {
-
-                    final CountDownLatch batchComplete = new CountDownLatch(1);
-                    final Handler<Void> runBatch = run -> {
-                        LOGGER.info("starting batch send with {} credits available", messageSender.getCredit());
-                        while (!messageSender.sendQueueFull() && messagesSent.get() < MAX_MESSAGES_PER_BATCH_SEND) {
-                            Map<String, Object> properties = new HashMap<>();
-                            properties.put("millis", System.currentTimeMillis());
-                            messageSender.send(deviceId, properties, sampler.getData(), sampler.getContentType(), token, (Handler<Void>) null);
-                            bytesSent.addAndGet(messageLength);
-                            messagesSent.incrementAndGet();
-                            if (LOGGER.isDebugEnabled()) {
-                                if (messagesSent.get() % 200 == 0) {
-                                    LOGGER.debug("messages sent: {}", messagesSent.get());
-                                }
-                            }
-                        }
-                        batchComplete.countDown();
-                    };
-
-                    vertx.getOrCreateContext().runOnContext(batchSend -> {
-
-                        if (messageSender.sendQueueFull()) {
-                            LOGGER.info("waiting for credits ...");
-                            messageSender.sendQueueDrainHandler(runBatch);
+                connectToAmqpMessagingNetwork()
+                    .setHandler(startup -> {
+                        if (startup.succeeded()) {
+                            LOGGER.info("sender initialization complete");
+                            LOGGER.debug("sender active: {}/{} ({})", sampler.getEndpoint(), tenant,
+                                    Thread.currentThread().getName());
+                            result.complete(null);
                         } else {
-                            runBatch.handle(null);
+                            running.set(false);
+                            result.completeExceptionally(startup.cause());
                         }
                     });
+            });
+        } else {
+            result.completeExceptionally(new IllegalStateException("sender is already starting"));
+        }
+        return result;
+    }
 
-                    batchComplete.await();
+    private Future<HonoConnection> connectToAmqpMessagingNetwork() {
 
-                } else {
+        return downstreamSenderFactory
+                .connect()
+                .map(client -> {
+                    LOGGER.info("connected to AMQP Messaging Network [{}:{}]", sampler.getHost(), sampler.getPort());
+                    return client;
+                });
+    }
 
-                    Map<String, Long> properties = new HashMap<>();
-                    if (sampler.isSetSenderTime()) {
-                        properties.put("millis", System.currentTimeMillis());
-                    }
+    private Future<DownstreamSender> getSender(final String endpoint, final String tenant) {
 
-                    // mark send as error when we have no credits
-                    boolean messageAccepted = messageSender.send(deviceId, properties, sampler.getData(),
-                            sampler.getContentType(), token);
+        if (endpoint.equals(HonoSampler.Endpoint.telemetry.toString())) {
+            LOGGER.trace("getting telemetry sender for tenant [{}]", tenant);
+            return downstreamSenderFactory.getOrCreateTelemetrySender(tenant);
+        } else {
+            LOGGER.trace("getting event sender for tenant [{}]", tenant);
+            return downstreamSenderFactory.getOrCreateEventSender(tenant);
+        }
+    }
 
-                    if (messageAccepted) {
-                        bytesSent.addAndGet(messageLength);
-                        messagesSent.incrementAndGet();
-                    } else {
-                        String error = MessageFormat.format(
-                                "ERROR: Client has not enough capacity - credit: {0}  device: {1}  address: {2}  thread: {3}",
-                                messageSender.getCredit(), deviceId, sampler.getTenant(),
-                                sampler.getThreadName());
-                        sampleResult.setResponseMessage(error);
-                        sampleResult.setSuccessful(false);
-                        sampleResult.setResponseCode("500");
-                        LOGGER.error(error);
-                    }
+    /**
+     * Publishes multiple messages to Hono.
+     *
+     * @param sampleResult The result object representing the combined outcome of the samples.
+     * @param messageCount The number of messages to send
+     * @param deviceId The identifier if the device to send a message for.
+     * @param waitForDeliveryResult A flag indicating whether to wait for the result of the send operation.
+     */
+    public void send(final SampleResult sampleResult, final int messageCount, final String deviceId,
+                     final boolean waitForDeliveryResult) {
+        final long sampleStart = System.currentTimeMillis();
+        long addedSendDurations = 0;
+        boolean isSuccessful = true;
+        String firstResponseErrorMessage = "";
+        String firstResponseErrorCode = "";
+        long sentBytes = 0;
+        int errorCount = 0;
+        for (int i = 0; i < messageCount; i++) {
+            final SampleResult subResult = new SampleResult();
+            subResult.setDataType(SampleResult.TEXT);
+            subResult.setResponseOK();
+            subResult.setResponseCodeOK();
+            subResult.setSampleLabel(sampleResult.getSampleLabel());
+            // send the message
+            send(subResult, deviceId, waitForDeliveryResult);
+            // can't call sampleResult.addSubResult(subResult) here - this would prevent a later invocation of sampleResult.setStampAndTime()
+            sampleResult.addRawSubResult(subResult);
+
+            if (!subResult.isSuccessful()) {
+                isSuccessful = false;
+                errorCount++;
+                if (firstResponseErrorMessage.isEmpty()) {
+                    firstResponseErrorMessage = subResult.getResponseMessage();
+                    firstResponseErrorCode = subResult.getResponseCode();
                 }
+            }
+            sentBytes += subResult.getSentBytes();
+            addedSendDurations += subResult.getTime();
+        }
+        sampleResult.setSuccessful(isSuccessful);
+        final String responseMessage = MessageFormat.format("BatchResult {0}/{1}/{2}", sampler.getEndpoint(), sampler.getTenant(), deviceId);
+        if (isSuccessful) {
+            sampleResult.setResponseMessage(responseMessage);
+        } else {
+            sampleResult.setResponseMessage(responseMessage + ": " + errorCount + " errors - first: " + firstResponseErrorMessage);
+            sampleResult.setResponseCode(firstResponseErrorCode);
+        }
+        sampleResult.setSentBytes(sentBytes);
+        sampleResult.setSampleCount(messageCount);
+        sampleResult.setErrorCount(errorCount); // NOTE: This method does nothing in JMeter 3.3/4.0
+        final long averageElapsedTimePerMessage = addedSendDurations / messageCount;
+        sampleResult.setStampAndTime(sampleStart, averageElapsedTimePerMessage);
+    }
 
-                sampleResult.setSentBytes(bytesSent.get());
-                sampleResult.setSampleCount(messagesSent.get());
-                LOGGER.info("{}: sent batch of {} messages for device {}", sampler.getThreadName(), messagesSent.get(), deviceId);
+    /**
+     * Publishes a message to Hono.
+     *
+     * @param sampleResult The result object representing the outcome of the sample.
+     * @param deviceId The identifier if the device to send a message for.
+     * @param waitForDeliveryResult A flag indicating whether to wait for the result of the send operation.
+     */
+    public void send(final SampleResult sampleResult, final String deviceId, final boolean waitForDeliveryResult) {
+
+        final String endpoint = sampler.getEndpoint();
+        final String tenant = sampler.getTenant();
+
+        final Future<DownstreamSender> senderFuture = getSender(endpoint, tenant);
+        final CompletableFuture<SampleResult> tracker = new CompletableFuture<>();
+        final Future<ProtonDelivery> deliveryTracker = Future.future();
+        deliveryTracker.setHandler(s -> {
+            if (s.succeeded()) {
+                sampleResult.setResponseMessage(MessageFormat.format("{0}/{1}/{2}", endpoint, tenant, deviceId));
+                sampleResult.setSentBytes(payload.length);
+                sampleResult.setSampleCount(1);
+                tracker.complete(sampleResult);
             } else {
-                String error = "sender link could not be established";
-                sampleResult.setResponseMessage(error);
-                sampleResult.setSuccessful(false);
-                LOGGER.error(error);
+                tracker.completeExceptionally(s.cause());
+            }
+        });
+
+        // start sample
+        sampleResult.sampleStart();
+        senderFuture.map(sender -> {
+
+            final Message msg = ProtonHelper.message();
+            msg.setAddress(sender.getEndpoint() + "/" + tenant);
+            MessageHelper.setPayload(msg, sampler.getContentType(), Buffer.buffer(sampler.getData()));
+            MessageHelper.addDeviceId(msg, deviceId);
+            if (sampler.isSetSenderTime()) {
+                MessageHelper.addProperty(msg, TIME_STAMP_VARIABLE, System.currentTimeMillis());
             }
 
-            sampleResult.sampleEnd();
+            LOGGER.trace("sending message for device [{}]; credit: {}", deviceId, sender.getCredit());
 
-        } catch (Throwable t) {
-            LOGGER.error("unknown exception", t);
-        }
-    }
-
-    private void createDevice() throws InterruptedException {
-        if (registrationClient != null) {
-            CountDownLatch latch = new CountDownLatch(1);
-            JsonObject data = new JsonObject("{ \"type\": \"jmeter test device\" }");
-            registrationClient.register(sampler.getDeviceId(), data, assertHandler -> {
-                if (assertHandler.failed()) {
-                    LOGGER.error("RegistrationClient.register() failed", assertHandler.cause());
-                }
-                latch.countDown();
-            });
-            latch.await();
-            LOGGER.debug("created device: {}",sampler.getDeviceId());
-        } else {
-            LOGGER.debug("device could not be created - registrationClient is NULL: {}",sampler.getDeviceId());
-        }
-    }
-
-    private void removeDevice() throws InterruptedException {
-        if (registrationClient != null) {
-            CountDownLatch latch = new CountDownLatch(1);
-            registrationClient.deregister(sampler.getDeviceId(), assertHandler -> {
-                if (assertHandler.failed()) {
-                    LOGGER.error("RegistrationClient.deregister() failed", assertHandler.cause());
-                }
-                latch.countDown();
-            });
-            latch.await();
-            LOGGER.debug("removed device: {}",sampler.getDeviceId());
-        } else {
-            LOGGER.debug("device could not be removed - registrationClient is NULL: {}",sampler.getDeviceId());
-        }
-    }
-
-    private void updateAssertion() throws InterruptedException {
-        if (registrationClient != null) {
-            CountDownLatch latch = new CountDownLatch(1);
-            registrationClient.assertRegistration(sampler.getDeviceId(), assertHandler -> {
-                if (assertHandler.failed()) {
-                    LOGGER.error("RegistrationClient.assertRegistration() failed", assertHandler.cause());
+            final Handler<Void> sendHandler = s -> {
+                if (waitForDeliveryResult) {
+                    sender.sendAndWaitForOutcome(msg).setHandler(deliveryTracker);
                 } else {
-                    token = assertHandler.result().getPayload().getString("assertion");
+                    sender.send(msg).setHandler(ar -> {
+                        if (ar.succeeded()) {
+                            LOGGER.debug("{}: got delivery result for message sent for device [{}]: remoteState={}, localState={}",
+                                    sampler.getThreadName(), deviceId, ar.result().getRemoteState(),
+                                    ar.result().getLocalState());
+                        } else {
+                            LOGGER.warn("{}: error getting delivery result for message sent for device [{}]", sampler.getThreadName(), deviceId, ar.cause());
+                        }
+                    });
+                    deliveryTracker.complete();
                 }
-                latch.countDown();
+            };
+
+            ctx.runOnContext(send -> {
+                if (sender.getCredit() > 0) {
+                    sendHandler.handle(null);
+                } else {
+                    sender.sendQueueDrainHandler(sendHandler);
+                }
             });
-            latch.await();
-            LOGGER.debug("updated assertion: {} for device: {}",token,sampler.getDeviceId());
-        } else {
-            LOGGER.debug("assertion could not be updated - registrationClient is NULL: {}",sampler.getDeviceId());
+
+            return null;
+
+        }).otherwise(t -> {
+            tracker.completeExceptionally(t);
+            return null;
+        });
+
+        try {
+            tracker.get(sampler.getSendTimeoutOrDefaultAsInt(), TimeUnit.MILLISECONDS);
+            LOGGER.debug("{}: sent message for device [{}]", sampler.getThreadName(), deviceId);
+        } catch (InterruptedException | CancellationException | ExecutionException | TimeoutException e) {
+            sampleResult.setSuccessful(false);
+            if (e.getCause() instanceof ServiceInvocationException) {
+                final ServiceInvocationException sie = (ServiceInvocationException) e.getCause();
+                sampleResult.setResponseMessage(sie.getMessage());
+                sampleResult.setResponseCode(String.valueOf(sie.getErrorCode()));
+            } else {
+                String uncompletedFutureHint = "";
+                if (e instanceof TimeoutException) {
+                    uncompletedFutureHint = !senderFuture.isComplete() ? " - timeout waiting for sender link"
+                            : !deliveryTracker.isComplete() ? " - timeout waiting for message delivery" : "";
+                }
+                sampleResult.setResponseMessage((e.getCause() != null ? e.getCause().getMessage() : e.getClass().getSimpleName()) + uncompletedFutureHint);
+                sampleResult.setResponseCode(String.valueOf(HttpURLConnection.HTTP_INTERNAL_ERROR));
+            }
+            LOGGER.debug("{}: error sending message for device [{}]: {}", sampler.getThreadName(), deviceId, sampleResult.getResponseMessage());
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
         }
+        sampleResult.sampleEnd();
     }
 
-    public void close() throws InterruptedException {
+    /**
+     * Closes the connections to the Device Registration Service and the AMQP Messaging Network.
+     *
+     * @return A future that successfully completes once the connections are closed.
+     */
+    public CompletableFuture<Void> close() {
+
+        final CompletableFuture<Void> shutdown = new CompletableFuture<>();
 
         if (running.compareAndSet(true, false)) {
-            try {
-                final CountDownLatch closeLatch = new CountDownLatch(1);
-                messageSender.close(closeAttempt -> {
-                    if (closeAttempt.succeeded()) {
-                        closeLatch.countDown();
-                    }
-                });
-                if (!closeLatch.await(5, TimeUnit.SECONDS)) {
-                    LOGGER.warn("could not close sender properly, shutting down connection ...");
-                }
-                removeDevice();
-                registrationHonoClient.shutdown();
-                honoClient.shutdown();
-                vertx.close();
-            } catch (final Throwable t) {
-                LOGGER.error("unknown exception in closing of sender", t);
+
+            final Future<Void> honoTracker = Future.future();
+            if (downstreamSenderFactory != null) {
+                downstreamSenderFactory.disconnect(honoTracker);
+            } else {
+                honoTracker.complete();
             }
+
+            honoTracker.otherwiseEmpty().compose(ok -> closeVertx()).setHandler(done -> shutdown.complete(null));
+        } else {
+            LOGGER.debug("sender already stopped");
+            shutdown.complete(null);
         }
+        return shutdown;
     }
 }

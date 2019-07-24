@@ -1,37 +1,45 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.client.impl;
 
-import static org.mockito.Mockito.*;
+import static org.eclipse.hono.client.impl.VertxMockSupport.anyHandler;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.util.function.BiConsumer;
 
 import org.apache.qpid.proton.amqp.messaging.Released;
 import org.apache.qpid.proton.amqp.transport.Source;
 import org.apache.qpid.proton.message.Message;
+import org.eclipse.hono.client.HonoConnection;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.ext.unit.Async;
 import io.vertx.ext.unit.TestContext;
+import io.vertx.ext.unit.junit.Timeout;
 import io.vertx.ext.unit.junit.VertxUnitRunner;
-import io.vertx.proton.ProtonConnection;
 import io.vertx.proton.ProtonDelivery;
 import io.vertx.proton.ProtonHelper;
 import io.vertx.proton.ProtonMessageHandler;
@@ -46,14 +54,22 @@ import io.vertx.proton.ProtonReceiver;
 @RunWith(VertxUnitRunner.class)
 public class EventConsumerImplTest {
 
+    /**
+     * Timeout each test after 5 secs.
+     */
+    @Rule
+    public Timeout timeout = Timeout.seconds(5);
+
     private Vertx vertx;
+    private HonoConnection connection;
 
     /**
      * Initializes fixture.
      */
     @Before
     public void setUp() {
-        vertx = Vertx.vertx();
+        vertx = mock(Vertx.class);
+        connection = HonoClientUnitTestHelper.mockHonoConnection(vertx);
     }
 
     /**
@@ -70,40 +86,44 @@ public class EventConsumerImplTest {
      * 
      * @param ctx The test context.
      */
-    @SuppressWarnings("unchecked")
     @Test
     public void testCreateRegistersBiConsumerAsMessageHandler(final TestContext ctx) {
 
         // GIVEN an event consumer that releases all messages
-        BiConsumer<ProtonDelivery, Message> eventConsumer = (delivery, message) -> {
+        final BiConsumer<ProtonDelivery, Message> eventConsumer = (delivery, message) -> {
             ProtonHelper.released(delivery, true);
         };
-        Source source = mock(Source.class);
-        when(source.toString()).thenReturn("event/tenant");
-        ProtonReceiver receiver = mock(ProtonReceiver.class);
+        final Source source = mock(Source.class);
+        when(source.getAddress()).thenReturn("event/tenant");
+        final ProtonReceiver receiver = mock(ProtonReceiver.class);
+        when(receiver.getSource()).thenReturn(source);
         when(receiver.getRemoteSource()).thenReturn(source);
         when(receiver.getRemoteQoS()).thenReturn(ProtonQoS.AT_LEAST_ONCE);
-        ProtonConnection con = mock(ProtonConnection.class);
-        when(con.createReceiver(anyString())).thenReturn(receiver);
-        when(receiver.openHandler(any(Handler.class))).thenAnswer(invocation -> {
-            invocation.getArgumentAt(0, Handler.class).handle(Future.succeededFuture(receiver));
-            return receiver;
-        });
-        Async consumerCreation = ctx.async();
-        EventConsumerImpl.create(vertx.getOrCreateContext(), con, "tenant", AbstractHonoClient.DEFAULT_SENDER_CREDITS, eventConsumer, ctx.asyncAssertSuccess(s -> {
-            consumerCreation.complete();
-        }));
-        consumerCreation.await(500);
+
+        when(connection.createReceiver(
+                anyString(),
+                any(ProtonQoS.class),
+                any(ProtonMessageHandler.class),
+                anyHandler())).thenReturn(Future.succeededFuture(receiver));
+
+        final Async consumerCreation = ctx.async();
+        EventConsumerImpl.create(
+                connection,
+                "tenant",
+                eventConsumer,
+                remoteDetach -> {}).setHandler(ctx.asyncAssertSuccess(rec -> consumerCreation.complete()));
+
+        final ArgumentCaptor<ProtonMessageHandler> messageHandler = ArgumentCaptor.forClass(ProtonMessageHandler.class);
+        verify(connection).createReceiver(eq("event/tenant"), eq(ProtonQoS.AT_LEAST_ONCE),
+                messageHandler.capture(), anyHandler());
+        consumerCreation.await();
 
         // WHEN an event is received
-        ProtonDelivery delivery = mock(ProtonDelivery.class);
-        Message msg = mock(Message.class);
-        ArgumentCaptor<ProtonMessageHandler> messageHandler = ArgumentCaptor.forClass(ProtonMessageHandler.class);
-        verify(receiver).handler(messageHandler.capture());
+        final ProtonDelivery delivery = mock(ProtonDelivery.class);
+        final Message msg = mock(Message.class);
+        messageHandler.getValue().handle(delivery, msg);
 
         // THEN the message is released and settled
-        messageHandler.getValue().handle(delivery, msg);
         verify(delivery).disposition(any(Released.class), eq(Boolean.TRUE));
     }
-
 }

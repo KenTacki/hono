@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.util;
 
 import static org.junit.Assert.assertFalse;
@@ -19,10 +20,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 
+import javax.crypto.SecretKey;
+
 import org.junit.Test;
 
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
 
 /**
  * Verifies behavior of {@link JwtHelper}.
@@ -38,8 +42,9 @@ public class JwtHelperTest {
     @Test
     public void testIsExpired() {
 
-        String token = Jwts.builder()
-                            .signWith(SignatureAlgorithm.HS256, secret)
+        final SecretKey key = Keys.hmacShaKeyFor(secret);
+        final String token = Jwts.builder()
+                            .signWith(key, SignatureAlgorithm.HS256)
                             .setExpiration(Date.from(Instant.now().minus(Duration.ofSeconds(10))))
                             .compact();
 

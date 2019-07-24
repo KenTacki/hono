@@ -1,44 +1,44 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service.auth;
 
-import static org.eclipse.hono.service.auth.AuthenticationConstants.MECHANISM_EXTERNAL;
-import static org.eclipse.hono.service.auth.AuthenticationConstants.MECHANISM_PLAIN;
+import static org.eclipse.hono.util.AuthenticationConstants.MECHANISM_EXTERNAL;
+import static org.eclipse.hono.util.AuthenticationConstants.MECHANISM_PLAIN;
 
-import java.time.Duration;
-import java.time.Instant;
+import java.net.HttpURLConnection;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
 import java.util.Objects;
 
 import javax.net.ssl.SSLPeerUnverifiedException;
-import javax.security.cert.X509Certificate;
+import javax.security.auth.x500.X500Principal;
 
-import org.apache.qpid.proton.amqp.transport.AmqpError;
 import org.apache.qpid.proton.engine.Sasl;
 import org.apache.qpid.proton.engine.Sasl.SaslOutcome;
 import org.apache.qpid.proton.engine.Transport;
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.client.ServiceInvocationException;
+import org.eclipse.hono.util.AuthenticationConstants;
 import org.eclipse.hono.util.Constants;
-import org.eclipse.hono.util.JwtHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.Vertx;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.NetSocket;
 import io.vertx.proton.ProtonConnection;
-import io.vertx.proton.ProtonHelper;
 import io.vertx.proton.sasl.ProtonSaslAuthenticator;
 
 /**
@@ -48,8 +48,7 @@ import io.vertx.proton.sasl.ProtonSaslAuthenticator;
  * <em>authorization id</em> and granted authorities is attached to the {@code ProtonConnection} under key
  * {@link Constants#KEY_CLIENT_PRINCIPAL}.
  * <p>
- * Verification of credentials is delegated to the {@code AuthenticationService} by means of sending a
- * message to {@link AuthenticationConstants#EVENT_BUS_ADDRESS_AUTHENTICATION_IN}.
+ * Verification of credentials is delegated to the {@code AuthenticationService} passed in the constructor.
  * <p>
  * Client certificate validation is done by Vert.x' {@code NetServer} during the TLS handshake,
  * so this class merely extracts the subject <em>Distinguished Name</em> (DN) from the client certificate
@@ -58,27 +57,27 @@ import io.vertx.proton.sasl.ProtonSaslAuthenticator;
 public final class HonoSaslAuthenticator implements ProtonSaslAuthenticator {
 
     private static final Logger   LOG = LoggerFactory.getLogger(HonoSaslAuthenticator.class);
-    private final Vertx           vertx;
+
     private final AuthenticationService authenticationService;
+
     private Sasl                  sasl;
     private boolean               succeeded;
     private ProtonConnection      protonConnection;
-    private X509Certificate[]     peerCertificateChain;
+    private X509Certificate       clientCertificate;
 
     /**
      * Creates a new authenticator.
      * 
-     * @param vertx the Vertx environment to run on.
      * @param authService The service to use for authenticating client.
      * @throws NullPointerException if any of the parameters is {@code null}.
      */
-    public HonoSaslAuthenticator(final Vertx vertx, final AuthenticationService authService) {
-        this.vertx = Objects.requireNonNull(vertx);
+    public HonoSaslAuthenticator(final AuthenticationService authService) {
         this.authenticationService = Objects.requireNonNull(authService);
     }
 
     @Override
     public void init(final NetSocket socket, final ProtonConnection protonConnection, final Transport transport) {
+
         LOG.debug("initializing SASL authenticator");
         this.protonConnection = protonConnection;
         this.sasl = transport.sasl();
@@ -89,10 +88,12 @@ public final class HonoSaslAuthenticator implements ProtonSaslAuthenticator {
         if (socket.isSsl()) {
             LOG.debug("client connected using TLS, extracting client certificate chain");
             try {
-                peerCertificateChain = socket.peerCertificateChain();
-                LOG.debug("found valid client certificate DN [{}]", peerCertificateChain[0].getSubjectDN());
-            } catch (SSLPeerUnverifiedException e) {
-                LOG.debug("could not extract client certificate chain, maybe TLS based client auth is not required");
+                final Certificate cert = socket.sslSession().getPeerCertificates()[0];
+                if (cert instanceof X509Certificate) {
+                    clientCertificate = (X509Certificate) cert;
+                }
+            } catch (final SSLPeerUnverifiedException e) {
+                LOG.debug("could not extract client certificate chain, maybe client uses other mechanism than SASL EXTERNAL");
             }
         }
     }
@@ -100,65 +101,76 @@ public final class HonoSaslAuthenticator implements ProtonSaslAuthenticator {
     @Override
     public void process(final Handler<Boolean> completionHandler) {
 
-        String[] remoteMechanisms = sasl.getRemoteMechanisms();
+        final String[] remoteMechanisms = sasl.getRemoteMechanisms();
 
         if (remoteMechanisms.length == 0) {
             LOG.debug("client provided an empty list of SASL mechanisms [hostname: {}, state: {}]",
                     sasl.getHostname(), sasl.getState().name());
             completionHandler.handle(false);
         } else {
-            String chosenMechanism = remoteMechanisms[0];
+            final String chosenMechanism = remoteMechanisms[0];
             LOG.debug("client wants to authenticate using SASL [mechanism: {}, host: {}, state: {}]",
                     chosenMechanism, sasl.getHostname(), sasl.getState().name());
 
-            Future<HonoUser> authTracker = Future.future();
+            final Future<HonoUser> authTracker = Future.future();
             authTracker.setHandler(s -> {
+                final SaslOutcome saslOutcome;
                 if (s.succeeded()) {
 
-                    HonoUser user = s.result();
+                    final HonoUser user = s.result();
                     LOG.debug("authentication of client [authorization ID: {}] succeeded", user.getName());
                     Constants.setClientPrincipal(protonConnection, user);
                     succeeded = true;
-                    registerTimerForHandlingExpiredToken(user, protonConnection);
-                    sasl.done(SaslOutcome.PN_SASL_OK);
+                    saslOutcome = SaslOutcome.PN_SASL_OK;
 
                 } else {
 
-                    LOG.debug("authentication failed: " + s.cause().getMessage());
-                    sasl.done(SaslOutcome.PN_SASL_AUTH);
+                    if (s.cause() instanceof ServiceInvocationException) {
+                        final int status = ((ServiceInvocationException) s.cause()).getErrorCode();
+                        LOG.debug("authentication check failed: {} (status {})", s.cause().getMessage(), status);
+                        saslOutcome = getSaslOutcomeForErrorStatus(status);
+                    } else {
+                        LOG.debug("authentication check failed (no status code given in exception)", s.cause());
+                        saslOutcome = SaslOutcome.PN_SASL_TEMP;
+                    }
 
                 }
+                sasl.done(saslOutcome);
                 completionHandler.handle(Boolean.TRUE);
             });
 
-            byte[] saslResponse = new byte[sasl.pending()];
+            final byte[] saslResponse = new byte[sasl.pending()];
             sasl.recv(saslResponse, 0, saslResponse.length);
 
-            verify(chosenMechanism, saslResponse, authTracker.completer());
+            verify(chosenMechanism, saslResponse, authTracker);
         }
     }
 
-    // We currently have no way of refreshing the token before expiration using
-    // vertx-proton's existing API. We therefore force the client to re-connect when
-    // the token expires.
-    // Once we are able to refresh tokens using vertx-proton API we will get rid
-    // of this ugly hack.
-    // TODO refresh tokens properly
-    private void registerTimerForHandlingExpiredToken(final HonoUser user, final ProtonConnection con) {
-
-        if (user.getToken() != null) {
-            Duration expiration = Duration.between(Instant.now(), JwtHelper.getExpiration(user.getToken()).toInstant());
-            vertx.setTimer(expiration.toMillis(), tid -> {
-                LOG.debug("client's [{}] access token has expired, closing connection", user.getName());
-                con.setCondition(ProtonHelper.condition(AmqpError.UNAUTHORIZED_ACCESS, "access token expired")).close();
-                String conId = con.attachments().get(Constants.KEY_CONNECTION_ID, String.class);
-                if (conId != null) {
-                    vertx.eventBus().publish(
-                            Constants.EVENT_BUS_ADDRESS_CONNECTION_CLOSED,
-                            conId);
+    private SaslOutcome getSaslOutcomeForErrorStatus(final int status) {
+        final SaslOutcome saslOutcome;
+        switch (status) {
+            case HttpURLConnection.HTTP_BAD_REQUEST:
+            case HttpURLConnection.HTTP_UNAUTHORIZED:
+                // failed due to an authentication error
+                saslOutcome = SaslOutcome.PN_SASL_AUTH;
+                break;
+            case HttpURLConnection.HTTP_INTERNAL_ERROR:
+                // failed due to a system error
+                saslOutcome = SaslOutcome.PN_SASL_SYS;
+                break;
+            case HttpURLConnection.HTTP_UNAVAILABLE:
+                // failed due to a transient error
+                saslOutcome = SaslOutcome.PN_SASL_TEMP;
+                break;
+            default:
+                if (status >= 400 && status < 500) {
+                    // client error
+                    saslOutcome = SaslOutcome.PN_SASL_PERM;
+                } else {
+                    saslOutcome = SaslOutcome.PN_SASL_TEMP;
                 }
-            });
         }
+        return saslOutcome;
     }
 
     @Override
@@ -168,9 +180,11 @@ public final class HonoSaslAuthenticator implements ProtonSaslAuthenticator {
 
     private void verify(final String mechanism, final byte[] saslResponse, final Handler<AsyncResult<HonoUser>> authResultHandler) {
 
-        JsonObject authRequest = AuthenticationConstants.getAuthenticationRequest(mechanism, saslResponse);
-        if (peerCertificateChain != null) {
-            authRequest.put(AuthenticationConstants.FIELD_SUBJECT_DN, peerCertificateChain[0].getSubjectDN().getName());
+        final JsonObject authRequest = AuthenticationConstants.getAuthenticationRequest(mechanism, saslResponse);
+        if (clientCertificate != null) {
+            final String subjectDn = clientCertificate.getSubjectX500Principal().getName(X500Principal.RFC2253);
+            LOG.debug("client has provided X.509 certificate [subject DN: {}]", subjectDn);
+            authRequest.put(AuthenticationConstants.FIELD_SUBJECT_DN, subjectDn);
         }
         authenticationService.authenticate(authRequest, authResultHandler);
     }

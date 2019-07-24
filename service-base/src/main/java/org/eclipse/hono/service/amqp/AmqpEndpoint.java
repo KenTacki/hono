@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2017 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service.amqp;
 
 import org.eclipse.hono.service.Endpoint;
@@ -41,4 +42,15 @@ public interface AmqpEndpoint extends Endpoint {
      * @param sourceAddress The (remote) source address from the client's AMQP <em>ATTACH</em> message.
      */
     void onLinkAttach(ProtonConnection connection, ProtonSender sender, ResourceIdentifier sourceAddress);
+
+    /**
+     * Handles a closed connection.
+     * <p>
+     * This method is called whenever a connection got closed. Either actively but a call to disconnect, or by a
+     * broken/lost connection.
+     * </p>
+     * 
+     * @param connection The connection which got closed.
+     */
+    void onConnectionClosed(ProtonConnection connection);
 }

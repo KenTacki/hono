@@ -1,51 +1,98 @@
-/**
- * Copyright (c) 2016,2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.jmeter.ui;
 
-import javax.swing.*;
+import java.util.stream.Stream;
+
+import javax.swing.JCheckBox;
 
 import org.apache.jmeter.testelement.TestElement;
+import org.apache.jorphan.gui.JLabeledChoice;
 import org.apache.jorphan.gui.JLabeledTextArea;
 import org.apache.jorphan.gui.JLabeledTextField;
+import org.eclipse.hono.jmeter.HonoSampler;
 import org.eclipse.hono.jmeter.HonoSenderSampler;
 
 /**
- * Swing UI for sender sampler
+ * Swing UI for sender sampler.
  */
 public class HonoSenderSamplerUI extends HonoSamplerUI {
 
-    private final JLabeledTextField      deviceId                = new JLabeledTextField("DeviceID");
-    private final JCheckBox              setSenderTime           = new JCheckBox("Set sender time in property");
-    private final JCheckBox              waitForCredits          = new JCheckBox("Wait for credits");
-    private final JLabeledTextField      contentType             = new JLabeledTextField("Content type");
-    private final JLabeledTextArea       data                    = new JLabeledTextArea("Message data");
-    private final JLabeledTextField      waitForReceivers        = new JLabeledTextField(
-            "Wait on n active receivers in VM (e.g. from other threads)");
-    private final JLabeledTextField      waitForReceiversTimeout = new JLabeledTextField(
-            "Timeout for the wait on receivers (millis)");
-    private final HonoServerOptionsPanel registryServerOptions   = new HonoServerOptionsPanel("Hono Device Registry");
+    private static final long serialVersionUID = -2578458579696056223L;
 
+    private final JLabeledTextField  deviceId;
+    private final JCheckBox          setSenderTime;
+    private final JCheckBox          waitForDeliveryResult;
+    private final JLabeledTextField  contentType;
+    private final JLabeledTextArea   data;
+    private final JLabeledTextField  waitForReceivers;
+    private final JLabeledTextField  waitForReceiversTimeout;
+    private final JLabeledTextField  sampleSendTimeout;
+    private final JLabeledTextField  tenant;
+    private final JLabeledTextField  container;
+    private final JLabeledChoice     endpoint;
+    private final ServerOptionsPanel honoServerOptions;
+    private final JLabeledTextField  msgCountPerSamplerRun;
+
+    /**
+     * Creates a new UI that provides means to configure
+     * the southbound Telemetry &amp; Event API endpoint to connect to
+     * for sending messages and an (optional) Device Registration service
+     * endpoint for retrieving registration assertions.
+     */
     public HonoSenderSamplerUI() {
-        super("Hono Server");
-        addOption(registryServerOptions);
-        addDefaultOptions();
+
+        honoServerOptions = new ServerOptionsPanel("Telemetry & Event Endpoint");
+        tenant = new JLabeledTextField("Tenant");
+        container = new JLabeledTextField("Name");
+        endpoint = new JLabeledChoice("Endpoint",
+                Stream.of(HonoSampler.Endpoint.values()).map(HonoSampler.Endpoint::name).toArray(String[]::new));
+        endpoint.setToolTipText("<html>The name of the endpoint to send the AMQP message to.</html>");
+        deviceId = new JLabeledTextField("Device ID");
+        deviceId.setToolTipText("<html>The device identifier to put into the <em>device_id</em> application property of the AMQP message to send.</html>");
+        contentType = new JLabeledTextField("Content type");
+        data = new JLabeledTextArea("Message data");
+        waitForDeliveryResult = new JCheckBox("Wait for delivery result");
+        waitForDeliveryResult.setToolTipText("<html>Deselecting this option increases sender throughput, especially of <em>event</em> messages, " +
+                "at the expense of not finding out about rejected messages. <br>For this, the number of messages at the receiver end has to be checked.</html>");
+        setSenderTime = new JCheckBox("Set sender time in property");
+        setSenderTime.setToolTipText(new StringBuilder()
+                .append("<html>")
+                .append("When checked, the messages being sent will contain a timestamp (millis since epoch start) ")
+                .append("in the <em>timeStamp</em> application property.")
+                .append("</html>")
+                .toString());
+        waitForReceivers = new JLabeledTextField(
+                "Number of receivers to wait for (e.g. from other threads)");
+        waitForReceiversTimeout = new JLabeledTextField(
+                "Max time (millis) to wait for receivers");
+        sampleSendTimeout = new JLabeledTextField("Max time (millis) for sending a message");
+        msgCountPerSamplerRun = new JLabeledTextField("Number of messages per sampler run");
+
+        addOption(honoServerOptions);
+        addOption(tenant);
+        addOption(container);
+        addOption(getWrapperPanelToFixAlignment(endpoint));
         addOption(deviceId);
-        addOption(waitForCredits);
+        addOption(contentType);
+        addOption(data);
+        addOption(waitForDeliveryResult);
         addOption(setSenderTime);
         addOption(waitForReceivers);
         addOption(waitForReceiversTimeout);
-        addOption(contentType);
-        addOption(data);
+        addOption(sampleSendTimeout);
+        addOption(msgCountPerSamplerRun);
     }
 
     @Override
@@ -55,61 +102,65 @@ public class HonoSenderSamplerUI extends HonoSamplerUI {
 
     @Override
     public TestElement createTestElement() {
-        HonoSenderSampler sampler = new HonoSenderSampler();
+        final HonoSenderSampler sampler = new HonoSenderSampler();
         modifyTestElement(sampler);
         return sampler;
     }
 
     @Override
     public void modifyTestElement(final TestElement testElement) {
-        super.modifyTestElement(testElement);
-        HonoSenderSampler sampler = (HonoSenderSampler) testElement;
+
+        super.configureTestElement(testElement);
+        final HonoSenderSampler sampler = (HonoSenderSampler) testElement;
+        sampler.modifyServerOptions(honoServerOptions);
+        sampler.setEndpoint(HonoSampler.Endpoint.valueOf(endpoint.getText()));
+        sampler.setTenant(tenant.getText());
+        sampler.setContainer(container.getText());
         sampler.setDeviceId(deviceId.getText());
         sampler.setSetSenderTime(setSenderTime.isSelected());
-        sampler.setWaitForCredits(waitForCredits.isSelected());
+        sampler.setWaitForDeliveryResult(waitForDeliveryResult.isSelected());
         sampler.setWaitForReceivers(waitForReceivers.getText());
         sampler.setWaitForReceiversTimeout(waitForReceiversTimeout.getText());
+        sampler.setSendTimeout(sampleSendTimeout.getText());
+        sampler.setMessageCountPerSamplerRun(msgCountPerSamplerRun.getText());
         sampler.setContentType(contentType.getText());
         sampler.setData(data.getText());
-        // registry server
-        sampler.setRegistryHost(registryServerOptions.getHost().getText());
-        sampler.setRegistryPort(registryServerOptions.getPort().getText());
-        sampler.setRegistryUser(registryServerOptions.getUser().getText());
-        sampler.setRegistryPwd(registryServerOptions.getPwd().getText());
-        sampler.setRegistryTrustStorePath(registryServerOptions.getTrustStorePath().getText());
     }
 
     @Override
     public void configure(final TestElement element) {
         super.configure(element);
-        HonoSenderSampler sampler = (HonoSenderSampler) element;
+        final HonoSenderSampler sampler = (HonoSenderSampler) element;
+        sampler.configureServerOptions(honoServerOptions);
+        endpoint.setText(sampler.getEndpoint());
+        tenant.setText(sampler.getTenant());
+        container.setText(sampler.getContainer());
         deviceId.setText(sampler.getDeviceId());
         waitForReceivers.setText(sampler.getWaitForReceivers());
         waitForReceiversTimeout.setText(sampler.getWaitForReceiversTimeout());
+        sampleSendTimeout.setText(sampler.getSendTimeoutOrDefault());
+        msgCountPerSamplerRun.setText(sampler.getMessageCountPerSamplerRun());
         setSenderTime.setSelected(sampler.isSetSenderTime());
-        waitForCredits.setSelected(sampler.isWaitForCredits());
+        waitForDeliveryResult.setSelected(sampler.isWaitForDeliveryResult());
         contentType.setText(sampler.getContentType());
         data.setText(sampler.getData());
-        // registry server
-        registryServerOptions.getHost().setText(sampler.getRegistryHost());
-        registryServerOptions.getPort().setText(sampler.getRegistryPort());
-        registryServerOptions.getUser().setText(sampler.getRegistryUser());
-        registryServerOptions.getPwd().setText(sampler.getRegistryPwd());
-        registryServerOptions.getTrustStorePath().setText(sampler.getRegistryTrustStorePath());
     }
 
     @Override
     public void clearGui() {
         super.clearGui();
+        honoServerOptions.clearGui();
+        endpoint.setSelectedIndex(0);
+        tenant.setText("");
+        container.setText("");
         deviceId.setText("");
         setSenderTime.setSelected(true);
         contentType.setText("text/plain");
         data.setText("");
-        waitForCredits.setSelected(true);
+        waitForDeliveryResult.setSelected(true);
         waitForReceivers.setText("0");
         waitForReceiversTimeout.setText("5000");
-        // registry server
-        registryServerOptions.clearGui();
+        sampleSendTimeout.setText(Integer.toString(HonoSenderSampler.DEFAULT_SEND_TIMEOUT));
+        msgCountPerSamplerRun.setText("1");
     }
-
 }

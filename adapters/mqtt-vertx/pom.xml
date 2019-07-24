@@ -1,25 +1,37 @@
+<!--
+    Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
+   
+    See the NOTICE file(s) distributed with this work for additional
+    information regarding copyright ownership.
+   
+    This program and the accompanying materials are made available under the
+    terms of the Eclipse Public License 2.0 which is available at
+    http://www.eclipse.org/legal/epl-2.0
+   
+    SPDX-License-Identifier: EPL-2.0
+ -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.eclipse.hono</groupId>
     <artifactId>hono-adapters</artifactId>
-    <version>0.5-M9-SNAPSHOT</version>
+    <version>1.0-M6-SNAPSHOT</version>
   </parent>
   <artifactId>hono-adapter-mqtt-vertx</artifactId>
   <name>Hono MQTT Adapter</name>
 
+  <description>A protocol adapter exposing Hono's Telemetry &amp; Event APIs as a set of MQTT topics.</description>
+  <url>https://www.eclipse.org/hono</url>
+
   <dependencies>
     <dependency>
       <groupId>io.vertx</groupId>
-      <artifactId>vertx-mqtt-server</artifactId>
+      <artifactId>vertx-mqtt</artifactId>
     </dependency>
     <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.mockito</groupId>
-      <artifactId>mockito-core</artifactId>
+      <groupId>org.eclipse.hono</groupId>
+      <artifactId>hono-adapter-mqtt-vertx-base</artifactId>
+      <version>${project.version}</version>
     </dependency>
   </dependencies>
 
@@ -48,7 +60,7 @@
         <plugins>
           <plugin>
             <groupId>io.fabric8</groupId>
-            <artifactId>fabric8-maven-plugin</artifactId>
+            <artifactId>docker-maven-plugin</artifactId>
             <configuration>
               <images>
                 <image>
@@ -59,17 +71,16 @@
                       <port>8883</port>
                       <port>${vertx.health.port}</port>
                     </ports>
-                    <runCmds>
-                      <runCmd>adduser -S -D hono nogroup</runCmd>
-                    </runCmds>
-                    <user>hono</user>
-                    <workdir>/home/hono</workdir>
                     <cmd>
                       <exec>
                         <arg>java</arg>
+                        <arg>--illegal-access=permit</arg>
                         <arg>-Dvertx.cacheDirBase=/tmp</arg>
-                        <arg>-jar</arg>
+                        <arg>-Dloader.home=/opt/hono</arg>
+                        <arg>-Dloader.path=extensions</arg>
+                        <arg>-cp</arg>
                         <arg>/opt/hono/${project.artifactId}-${project.version}-${classifier.spring.boot.artifact}.jar</arg>
+                        <arg>org.springframework.boot.loader.PropertiesLauncher</arg>
                       </exec>
                     </cmd>
                     <assembly>
@@ -95,6 +106,26 @@
         </plugins>
       </build>
     </profile>
+    <profile>
+      <id>docker-push-image</id>
+      <build>
+          <plugins>
+              <plugin>
+                  <groupId>io.fabric8</groupId>
+                  <artifactId>docker-maven-plugin</artifactId>
+                  <executions>
+                      <execution>
+                          <id>docker-push-image</id>
+                          <phase>install</phase>
+                          <goals>
+                              <goal>push</goal>
+                          </goals>
+                      </execution>
+                  </executions>
+              </plugin>
+          </plugins>
+      </build>
+  </profile>
   </profiles>
 
 </project>

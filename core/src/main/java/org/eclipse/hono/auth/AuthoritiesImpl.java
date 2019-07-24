@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.auth;
 
@@ -28,9 +29,18 @@ import io.jsonwebtoken.Claims;
  */
 public final class AuthoritiesImpl implements Authorities {
 
+    /**
+     * The prefix used to indicate an authority on a resource.
+     */
+    public static final String PREFIX_RESOURCE = "r:";
+    /**
+     * The prefix used to indicate an authority on an operation.
+     */
+    public static final String PREFIX_OPERATION = "o:";
+
     private static final Logger LOG = LoggerFactory.getLogger(AuthoritiesImpl.class);
-    private static final String opTemplate = "o:%s:%s";
-    private static final String resTemplate = "r:%s";
+    private static final String opTemplate = PREFIX_OPERATION + "%s:%s";
+    private static final String resTemplate = PREFIX_RESOURCE + "%s";
     // holds mapping resources -> activities
     private final Map<String, String> authorities = new HashMap<>();
 
@@ -45,13 +55,13 @@ public final class AuthoritiesImpl implements Authorities {
      * 
      * @param claims The claims object to retrieve authorities from.
      * @return The authorities.
-     * @throws NullPointerException is claims is {@code null}.
+     * @throws NullPointerException if claims is {@code null}.
      */
     public static Authorities from(final Claims claims) {
         Objects.requireNonNull(claims);
-        AuthoritiesImpl result = new AuthoritiesImpl();
+        final AuthoritiesImpl result = new AuthoritiesImpl();
         claims.forEach((key, value) -> {
-            if ((key.startsWith("o:") || key.startsWith("r:")) && value instanceof String) {
+            if ((key.startsWith(PREFIX_OPERATION) || key.startsWith(PREFIX_RESOURCE)) && value instanceof String) {
                 LOG.trace("adding claim [key: {}, value: {}]", key, value);
                 result.authorities.put(key, (String) value);
             } else {
@@ -121,8 +131,8 @@ public final class AuthoritiesImpl implements Authorities {
      * @return This instance for command chaining.
      */
     public AuthoritiesImpl addResource(final String endpoint, final String tenant, final Activity... activities) {
-        StringBuilder b = new StringBuilder();
-        for (Activity a : activities) {
+        final StringBuilder b = new StringBuilder();
+        for (final Activity a : activities) {
             b.append(a.getCode());
         }
         authorities.put(getResourceKey(endpoint, tenant), b.toString());
@@ -139,7 +149,7 @@ public final class AuthoritiesImpl implements Authorities {
         authoritiesToAdd.asMap().entrySet().stream()
             .filter(entry -> entry.getValue() instanceof String)
             .forEach(entry -> {
-                String value = (String) entry.getValue();
+                final String value = (String) entry.getValue();
                 LOG.trace("adding authority [key: {}, activities: {}]", entry.getKey(), value);
                 authorities.put(entry.getKey(), value);
             });
@@ -189,14 +199,14 @@ public final class AuthoritiesImpl implements Authorities {
 
     @Override
     public Map<String, Object> asMap() {
-        Map<String, Object> result = new HashMap<>();
+        final Map<String, Object> result = new HashMap<>();
         result.putAll(authorities);
         return result;
     }
 
     boolean isAuthorized(final String key, final Activity intent) {
         boolean result = false;
-        String grantedActivities = authorities.get(key);
+        final String grantedActivities = authorities.get(key);
         if (grantedActivities == null) {
             LOG.trace("no claim for key [{}]", key);
         } else {

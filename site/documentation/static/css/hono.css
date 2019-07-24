@@ -1,0 +1,82 @@
+.alert {
+  padding-left: 1.4rem;
+  padding-right: 1.4rem;
+  border: 1px solid;
+  border-radius: .25rem;
+}
+
+.alert .alert-heading {
+  color: inherit !important;
+}
+
+.alert-notice {
+  background-color: #c4dfff;
+  border-color: #5fb4fc;
+}
+
+.alert-warning {
+  background-color: #f89691;
+  border-color: #e84e40;
+}
+
+#footer div.eclipse-logo {
+  max-width: 220px;
+}
+
+.logo-img {
+  width: 160px;
+  padding-top: 6px;
+}
+
+.cc-revoke.cc-bottom {
+  left: 16em; /* Move the Cookie button out of the menu bar */
+}
+
+#sidebar {
+  box-shadow: 2px 0 2px gray;
+}
+
+#sidebar #shortcuts li {
+  font-size: 18px;
+}
+
+#sidebar #footer {
+  color: black;
+}
+
+#sidebar #footer a {
+  color: #c55c04;
+  color: var(--MAIN-LINK-color);
+}
+
+#sidebar #footer a:hover {
+  color: #f08712;
+  color: var(--MAIN-LINK-HOVER-color) !important;
+}
+
+.old-version-hint p {
+  background-color: #efff77;
+  font-weight: bolder;
+  text-align: center;
+  padding: 10px !important;
+  width: 100%;
+  margin-top: 0;
+}
+
+.select-style svg {
+  fill: #f08712;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  margin: auto;
+}
+
+#select-box-wrapper {
+  text-align: right;
+  padding: 1rem;
+}
+
+#select-box {
+  border: 1px solid black;
+  border-radius: 4px;
+}

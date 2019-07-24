@@ -1,24 +1,26 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth.delegating;
 
 import java.util.Objects;
 
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.client.AuthenticationServerClient;
 import org.eclipse.hono.connection.ConnectionFactory;
 import org.eclipse.hono.service.HealthCheckProvider;
 import org.eclipse.hono.service.auth.AbstractHonoAuthenticationService;
-import org.eclipse.hono.service.auth.AuthenticationConstants;
+import org.eclipse.hono.util.AuthenticationConstants;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
@@ -27,7 +29,8 @@ import org.springframework.stereotype.Service;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.json.JsonObject;
+import io.vertx.core.dns.DnsClient;
+import io.vertx.core.impl.VertxInternal;
 import io.vertx.ext.healthchecks.HealthCheckHandler;
 import io.vertx.ext.healthchecks.Status;
 
@@ -43,11 +46,25 @@ public class DelegatingAuthenticationService extends AbstractHonoAuthenticationS
 
     private AuthenticationServerClient client;
     private ConnectionFactory factory;
+    private DnsClient dnsClient;
 
     @Autowired
     @Override
     public void setConfig(final AuthenticationServerClientConfigProperties configuration) {
         setSpecificConfig(configuration);
+    }
+
+    /**
+     * Sets the DNS client to use for checking availability of an <em>Authentication</em> service.
+     * <p>
+     * If not set, the vert.x instance's address resolver is used instead.
+     *
+     * @param dnsClient The client.
+     * @throws NullPointerException if client is {@code null}.
+     */
+    @Autowired(required = false)
+    public void setDnsClient(final DnsClient dnsClient) {
+        this.dnsClient = Objects.requireNonNull(dnsClient);
     }
 
     /**
@@ -70,33 +87,53 @@ public class DelegatingAuthenticationService extends AbstractHonoAuthenticationS
     }
 
     /**
-     * Registers a check which succeeds if a connection with the configured <em>Authentication</em> service can be established.
-     *
+     * Registers a check which succeeds if the configured <em>Authentication</em> service host name
+     * can be resolved via DNS.
+     * <p>
+     * If no DNS resolver is available, then no check will be registered.
+     * 
      * @param readinessHandler The health check handler to register the checks with.
      */
     @Override
     public void registerReadinessChecks(final HealthCheckHandler readinessHandler) {
-        readinessHandler.register("authentication-service-connection", status -> {
-            if (factory == null) {
-                status.complete(Status.KO(new JsonObject().put("error", "no connection factory set for Authentication service")));
-            } else {
-                log.debug("checking connection to Authentication service");
-                factory.connect(null, null, null, s -> {
-                    if (s.succeeded()) {
-                        s.result().close();
-                        status.complete(Status.OK());
+
+        if (dnsClient != null) {
+            log.info("registering readiness check using DNS Client");
+            readinessHandler.register("authentication-service-availability", status -> {
+                log.trace("checking availability of Authentication service");
+                dnsClient.lookup(getConfig().getHost(), lookupAttempt -> {
+                    if (lookupAttempt.succeeded()) {
+                        status.tryComplete(Status.OK());
                     } else {
-                        status.complete(Status.KO(new JsonObject().put("error", "cannot connect to Authentication service")));
+                        log.debug("readiness check failed to resolve Authentication service address [{}]: {}",
+                                getConfig().getHost(), lookupAttempt.cause().getMessage());
+                        status.tryComplete(Status.KO());
                     }
                 });
-            }
-        });
+            });
+        } else if (VertxInternal.class.isInstance(vertx)) {
+            log.info("registering readiness check using vert.x Address Resolver");
+            readinessHandler.register("authentication-service-availability", status -> {
+                log.trace("checking availability of Authentication service");
+                ((VertxInternal) vertx).resolveAddress(getConfig().getHost(), lookupAttempt -> {
+                    if (lookupAttempt.succeeded()) {
+                        status.tryComplete(Status.OK());
+                    } else {
+                        log.debug("readiness check failed to resolve Authentication service address [{}]: {}",
+                                getConfig().getHost(), lookupAttempt.cause().getMessage());
+                        status.tryComplete(Status.KO());
+                    }
+                });
+            });
+        } else {
+            log.warn("cannot register readiness check, no DNS resolver available");
+        }
     }
 
     @Override
     protected void doStart(final Future<Void> startFuture) {
         if (factory == null) {
-            startFuture.fail("no connection factory for authentication server set");
+            startFuture.fail("no connection factory for Authentication service set");
         } else {
             client = new AuthenticationServerClient(vertx, factory);
             startFuture.complete();
@@ -118,7 +155,7 @@ public class DelegatingAuthenticationService extends AbstractHonoAuthenticationS
     @Override
     public String toString() {
         return new StringBuilder(DelegatingAuthenticationService.class.getSimpleName())
-                .append("[auth-server: ").append(getConfig().getHost()).append(":").append(getConfig().getPort()).append("]")
+                .append("[Authentication service: ").append(getConfig().getHost()).append(":").append(getConfig().getPort()).append("]")
                 .toString();
     }
 }

@@ -1,88 +1,198 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.metric;
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.actuate.metrics.CounterService;
-import org.springframework.boot.actuate.metrics.GaugeService;
-import org.springframework.stereotype.Component;
+import io.micrometer.core.instrument.Timer.Sample;
+import org.eclipse.hono.util.TenantObject;
 
-import java.util.Objects;
-
-@Component
-abstract public class Metrics {
+/**
+ * A collector for metrics.
+ */
+public interface Metrics {
 
     /**
-     * special prefixes used by spring boot actuator together with dropwizard metrics
-     * @see <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/production-ready-metrics.html#production-ready-dropwizard-metrics">Spring Boot</a>
+     * Reports a newly established connection with an authenticated device.
+     * 
+     * @param tenantId The tenant that the device belongs to.
+     * @throws NullPointerException if tenant is {@code null}.
      */
-    protected static String METER_PREFIX     = "meter.";
-    protected static String TIMER_PREFIX     = "timer.";
-    protected static String HISTOGRAM_PREFIX = "histogram.";
-
-    /** metric parts for messages - useable for AMQP, MQTT, etc. */
-    protected static final String MESSAGES      = ".messages.";
-    protected static final String PROCESSED     = ".processed";
-    protected static final String DISCARDED     = ".discarded";
-    protected static final String UNDELIVERABLE = ".undeliverable";
-
-    protected GaugeService   gaugeService   = NullGaugeService.getInstance();
-    protected CounterService counterService = NullCounterService.getInstance();
+    void incrementConnections(String tenantId);
 
     /**
-     * It is needed to set the specific service prefix; if no config is given it is not needed and will never be used
+     * Reports a connection to an authenticated device being closed.
+     * 
+     * @param tenantId The tenant that the device belongs to.
+     * @throws NullPointerException if tenant is {@code null}.
+     */
+    void decrementConnections(String tenantId);
+
+    /**
+     * Reports a newly established connection with an unauthenticated device.
+     */
+    void incrementUnauthenticatedConnections();
+
+    /**
+     * Reports a connection to an unauthenticated device being closed.
+     */
+    void decrementUnauthenticatedConnections();
+
+    /**
+     * Gets the total number of current connections - authenticated for all tenants and unauthenticated.
      *
-     * @param metricConfig The metrics config
+     * @return total number of connections.
      */
-    @Autowired(required = false)
-    public void setMetricConfig(final MetricConfig metricConfig) {
-        metricConfig.setPrefix(getPrefix());
-    }
+    int getNumberOfConnections();
 
     /**
-     * Deriving classes need to provide a prefix to scope the metrics of the service
-     *
-     * @return The Prefix
+     * Starts a new timer.
+     * 
+     * @return The newly created timer.
      */
-    protected abstract String getPrefix();
+    Sample startTimer();
 
     /**
-     * Sets the spring boot gauge service, will be based on Dropwizard Metrics, if in classpath.
+     * Reports a telemetry message or event received from a device.
      *
-     * @param gaugeService The gauge service.
+     * @param type The type of message received, e.g. <em>telemetry</em> or <em>event</em>.
+     * @param tenantId The tenant that the device belongs to.
+     * @param outcome The outcome of processing the message.
+     * @param qos The delivery semantics used for sending the message downstream.
+     * @param payloadSize The number of bytes contained in the message's payload.
+     * @param timer The timer indicating the amount of time used
+     *              for processing the message.
+     * @throws NullPointerException if any of the parameters are {@code null}.
+     * @throws IllegalArgumentException if type is neither telemetry nor event or
+     *                    if payload size is negative.
      */
-    @Autowired
-    public final void setGaugeService(final GaugeService gaugeService) {
-        this.gaugeService = gaugeService;
-    }
+    void reportTelemetry(
+            MetricsTags.EndpointType type,
+            String tenantId,
+            MetricsTags.ProcessingOutcome outcome,
+            MetricsTags.QoS qos,
+            int payloadSize,
+            Sample timer);
 
     /**
-     * Sets the spring boot counter service, will be based on Dropwizard Metrics, if in classpath.
-     *
-     * @param counterService The counter service.
+     * Reports a telemetry message or event received from a device. 
+     * <p> 
+     * The payload size of the message is calculated based on the configured 
+     * minimum message size and the calculated size is reported. 
+     * <p>
+     * The configured minimum message size is retrieved from the tenant 
+     * configuration object.
+     * 
+     * @param type The type of message received, e.g. <em>telemetry</em> or <em>event</em>.
+     * @param tenantId The tenant that the device belongs to.
+     * @param tenantObject The tenant configuration object or {@code null}.
+     * @param outcome The outcome of processing the message.
+     * @param qos The delivery semantics used for sending the message downstream.
+     * @param payloadSize The number of bytes contained in the message's payload.
+     * @param timer The timer indicating the amount of time used
+     *              for processing the message.
+     * @throws NullPointerException if any of the parameters except the tenant object are {@code null}.
+     * @throws IllegalArgumentException if type is neither telemetry nor event or
+     *                    if payload size is negative.
      */
-    @Autowired
-    public final void setCounterService(final CounterService counterService) {
-        this.counterService = counterService;
-    }
+    void reportTelemetry(
+            MetricsTags.EndpointType type,
+            String tenantId,
+            TenantObject tenantObject,
+            MetricsTags.ProcessingOutcome outcome,
+            MetricsTags.QoS qos,
+            int payloadSize,
+            Sample timer);
 
-    protected String normalizeAddress(final String address) {
-        Objects.requireNonNull(address);
-        return address.replace('/', '.');
-    }
+    /**
+     * Reports a telemetry message or event received from a device.
+     *
+     * @param type The type of message received, e.g. <em>telemetry</em> or <em>event</em>.
+     * @param tenantId The tenant that the device belongs to.
+     * @param outcome The outcome of processing the message.
+     * @param qos The delivery semantics used for sending the message downstream.
+     * @param payloadSize The number of bytes contained in the message's payload.
+     * @param ttdStatus The outcome of processing the TTD value contained in the message.
+     * @param timer The timer indicating the amount of time used
+     *              for processing the message.
+     * @throws NullPointerException if any of the parameters are {@code null}.
+     * @throws IllegalArgumentException if type is neither telemetry nor event or
+     *                    if payload size is negative.
+     */
+    void reportTelemetry(
+            MetricsTags.EndpointType type,
+            String tenantId,
+            MetricsTags.ProcessingOutcome outcome,
+            MetricsTags.QoS qos,
+            int payloadSize,
+            MetricsTags.TtdStatus ttdStatus,
+            Sample timer);
 
-    protected String mergeAsMetric(final String... parts ) {
-        return String.join(".",parts);
-    }
+    /**
+     * Reports a telemetry message or event received from a device.
+     * <p> 
+     * The payload size of the message is calculated based on the configured 
+     * minimum message size and the calculated size is reported. 
+     * <p>
+     * The configured minimum message size is retrieved from the tenant 
+     * configuration object.
+     *     
+     * @param type The type of message received, e.g. <em>telemetry</em> or <em>event</em>.
+     * @param tenantId The tenant that the device belongs to.
+     * @param tenantObject The tenant configuration object or {@code null}.
+     * @param outcome The outcome of processing the message.
+     * @param qos The delivery semantics used for sending the message downstream.
+     * @param payloadSize The number of bytes contained in the message's payload.
+     * @param ttdStatus The outcome of processing the TTD value contained in the message.
+     * @param timer The timer indicating the amount of time used
+     *              for processing the message.
+     * @throws NullPointerException if any of the parameters except the tenant object are {@code null}.
+     * @throws IllegalArgumentException if type is neither telemetry nor event or
+     *                    if payload size is negative.
+     */
+    void reportTelemetry(
+            MetricsTags.EndpointType type,
+            String tenantId,
+            TenantObject tenantObject,
+            MetricsTags.ProcessingOutcome outcome,
+            MetricsTags.QoS qos,
+            int payloadSize,
+            MetricsTags.TtdStatus ttdStatus,
+            Sample timer);
 
+    /**
+     * Reports a command &amp; control message being transferred to/from a device.
+     * <p> 
+     * The payload size of the message is calculated based on the configured 
+     * minimum message size and the calculated size is reported. 
+     * <p>
+     * The configured minimum message size is retrieved from the tenant 
+     * configuration object.
+     *
+     * @param direction The command message's direction.
+     * @param tenantId The tenant that the device belongs to.
+     * @param tenantObject The tenant configuration object or {@code null}.
+     * @param outcome The outcome of processing the message.
+     * @param payloadSize The number of bytes contained in the message's payload.
+     * @param timer The timer indicating the amount of time used
+     *              for processing the message.
+     * @throws NullPointerException if any of the parameters except the tenant object are {@code null}.
+     * @throws IllegalArgumentException if payload size is negative.
+     */
+    void reportCommand(
+            MetricsTags.Direction direction,
+            String tenantId,
+            TenantObject tenantObject,
+            MetricsTags.ProcessingOutcome outcome,
+            int payloadSize,
+            Sample timer);
 }

@@ -1,30 +1,58 @@
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
+
 package org.eclipse.hono.client.impl;
 
+import org.eclipse.hono.client.HonoConnection;
+import org.eclipse.hono.client.MessageConsumer;
+
 import io.vertx.core.AsyncResult;
-import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.proton.ProtonConnection;
-import io.vertx.proton.ProtonDelivery;
-import io.vertx.proton.ProtonQoS;
 import io.vertx.proton.ProtonReceiver;
-import org.apache.qpid.proton.message.Message;
-import org.eclipse.hono.client.MessageConsumer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.util.function.BiConsumer;
 
 /**
  * Abstract client for consuming messages from a Hono server.
  */
-abstract class AbstractConsumer extends AbstractHonoClient implements MessageConsumer {
+public abstract class AbstractConsumer extends AbstractHonoClient implements MessageConsumer {
 
-    private static final Logger LOG = LoggerFactory.getLogger(AbstractConsumer.class);
+    private Handler<String> localCloseHandler;
 
-    AbstractConsumer(final Context context, final ProtonReceiver receiver) {
-        super(context);
+    /**
+     * Creates an abstract message consumer.
+     *
+     * @param connection The connection to use.
+     * @param receiver The proton receiver link.
+     */
+    public AbstractConsumer(final HonoConnection connection, final ProtonReceiver receiver) {
+
+        super(connection);
         this.receiver = receiver;
+    }
+
+    /**
+     * Sets a handler which will be invoked after this consumer has been
+     * locally closed.
+     * 
+     * @param handler The handler.
+     */
+    protected void setLocalCloseHandler(final Handler<String> handler) {
+        this.localCloseHandler = handler;
+    }
+
+    @Override
+    public int getRemainingCredit() {
+        return receiver.getCredit() - receiver.getQueued();
     }
 
     @Override
@@ -34,49 +62,14 @@ abstract class AbstractConsumer extends AbstractHonoClient implements MessageCon
 
     @Override
     public void close(final Handler<AsyncResult<Void>> closeHandler) {
-        closeLinks(closeHandler);
-    }
 
-    static Future<ProtonReceiver> createConsumer(
-            final Context context,
-            final ProtonConnection con,
-            final String tenantId,
-            final String pathSeparator,
-            final String address,
-            final ProtonQoS qos,
-            final int prefetch,
-            final BiConsumer<ProtonDelivery, Message> consumer) {
-
-        Future<ProtonReceiver> result = Future.future();
-        final String targetAddress = String.format(address, pathSeparator, tenantId);
-
-        context.runOnContext(open -> {
-            final ProtonReceiver receiver = con.createReceiver(targetAddress);
-            receiver.setAutoAccept(true);
-            receiver.setPrefetch(prefetch);
-            receiver.setQoS(qos);
-            receiver.handler((delivery, message) -> {
-                if (consumer != null) {
-                    consumer.accept(delivery, message);
-                }
-                if (LOG.isTraceEnabled()) {
-                    int remainingCredits = receiver.getCredit() - receiver.getQueued();
-                    LOG.trace("handling message [remotely settled: {}, queued messages: {}, remaining credit: {}]", delivery.remotelySettled(), receiver.getQueued(), remainingCredits);
-                }
-            });
-            receiver.openHandler(receiverOpen -> {
-                if (receiverOpen.succeeded()) {
-                    LOG.debug("receiver [source: {}, qos: {}] open", receiver.getRemoteSource(), receiver.getRemoteQoS());
-                    if (qos.equals(ProtonQoS.AT_LEAST_ONCE) && !qos.equals(receiver.getRemoteQoS())) {
-                        LOG.info("remote container uses other QoS than requested [requested: {}, in use: {}]", qos, receiver.getRemoteQoS());
-                    }
-                    result.complete(receiver);
-                } else {
-                    result.fail(receiverOpen.cause());
-                }
-            });
-            receiver.open();
+        closeLinks(ok -> {
+            if (localCloseHandler != null) {
+                localCloseHandler.handle(receiver.getSource().getAddress());
+            }
+            if (closeHandler != null) {
+                closeHandler.handle(Future.succeededFuture());
+            }
         });
-        return result;
     }
 }

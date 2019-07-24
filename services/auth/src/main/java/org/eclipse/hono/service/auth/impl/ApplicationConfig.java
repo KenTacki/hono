@@ -1,32 +1,40 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth.impl;
 
 import org.eclipse.hono.config.ApplicationConfigProperties;
+import org.eclipse.hono.config.ServerConfig;
 import org.eclipse.hono.config.ServiceConfigProperties;
+import org.eclipse.hono.config.VertxProperties;
+import org.eclipse.hono.service.HealthCheckServer;
+import org.eclipse.hono.service.VertxBasedHealthCheckServer;
 import org.eclipse.hono.service.auth.AuthTokenHelper;
 import org.eclipse.hono.service.auth.AuthTokenHelperImpl;
-import org.eclipse.hono.service.auth.AuthenticationConstants;
+import org.eclipse.hono.service.metric.MetricsTags;
+import org.eclipse.hono.util.AuthenticationConstants;
+import org.eclipse.hono.util.Constants;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.config.ObjectFactoryCreatingFactoryBean;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.spring.autoconfigure.MeterRegistryCustomizer;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
-import io.vertx.core.dns.AddressResolverOptions;
-import org.springframework.context.annotation.Scope;
 
 /**
  * Spring Boot configuration for the simple authentication server application.
@@ -38,21 +46,35 @@ public class ApplicationConfig {
     private static final String BEAN_NAME_SIMPLE_AUTHENTICATION_SERVER = "simpleAuthenticationServer";
 
     /**
-     * Gets the singleton Vert.x instance to be used by Hono.
+     * Exposes a Vert.x instance as a Spring bean.
+     * <p>
+     * This method creates new Vert.x default options and invokes
+     * {@link VertxProperties#configureVertx(VertxOptions)} on the object returned
+     * by {@link #vertxProperties()}.
      * 
-     * @return the instance.
+     * @return The Vert.x instance.
      */
     @Bean
     public Vertx vertx() {
-        VertxOptions options = new VertxOptions()
-                .setWarningExceptionTime(1500000000)
-                .setAddressResolverOptions(new AddressResolverOptions()
-                        .setCacheNegativeTimeToLive(0) // discard failed DNS lookup results immediately
-                        .setCacheMaxTimeToLive(0) // support DNS based service resolution
-                        .setQueryTimeout(1000));
-        return Vertx.vertx(options);
+        return Vertx.vertx(vertxProperties().configureVertx(new VertxOptions()));
     }
 
+    /**
+     * Exposes configuration properties for Vert.x.
+     * 
+     * @return The properties.
+     */
+    @ConfigurationProperties("hono.vertx")
+    @Bean
+    public VertxProperties vertxProperties() {
+        return new VertxProperties();
+    }
+
+    /**
+     * Creates a new Authentication Server instance and exposes it as a Spring Bean.
+     * 
+     * @return The new instance.
+     */
     @Bean(name = BEAN_NAME_SIMPLE_AUTHENTICATION_SERVER)
     @Scope("prototype")
     public SimpleAuthenticationServer simpleAuthenticationServer(){
@@ -60,26 +82,37 @@ public class ApplicationConfig {
     }
 
     /**
-     * Exposes a factory for creating service instances as a Spring bean.
+     * Exposes a factory for Authentication Server instances as a Spring bean.
      * 
      * @return The factory.
      */
     @Bean
     public ObjectFactoryCreatingFactoryBean authServerFactory() {
-        ObjectFactoryCreatingFactoryBean factory = new ObjectFactoryCreatingFactoryBean();
+        final ObjectFactoryCreatingFactoryBean factory = new ObjectFactoryCreatingFactoryBean();
         factory.setTargetBeanName(BEAN_NAME_SIMPLE_AUTHENTICATION_SERVER);
         return factory;
     }
 
     /**
-     * Exposes properties for configuring the application properties a Spring bean.
+     * Exposes properties for configuring the application properties as a Spring bean.
      *
      * @return The application configuration properties.
      */
     @Bean
     @ConfigurationProperties(prefix = "hono.app")
-    public ApplicationConfigProperties applicationConfigProperties(){
+    public ApplicationConfigProperties applicationConfigProperties() {
         return new ApplicationConfigProperties();
+    }
+
+    /**
+     * Exposes properties for configuring the health check as a Spring bean.
+     *
+     * @return The health check configuration properties.
+     */
+    @Bean
+    @ConfigurationProperties(prefix = "hono.health-check")
+    public ServerConfig healthCheckConfigProperties() {
+        return new ServerConfig();
     }
 
     /**
@@ -90,8 +123,7 @@ public class ApplicationConfig {
     @Bean
     @ConfigurationProperties(prefix = "hono.auth.amqp")
     public ServiceConfigProperties amqpProperties() {
-        ServiceConfigProperties props = new ServiceConfigProperties();
-        return props;
+        return new ServiceConfigProperties();
     }
 
     /**
@@ -113,8 +145,8 @@ public class ApplicationConfig {
     @Bean
     @Qualifier("signing")
     public AuthTokenHelper authTokenFactory() {
-        ServiceConfigProperties amqpProps = amqpProperties();
-        AuthenticationServerConfigProperties serviceProps = serviceProperties();
+        final ServiceConfigProperties amqpProps = amqpProperties();
+        final AuthenticationServerConfigProperties serviceProps = serviceProperties();
         if (!serviceProps.getSigning().isAppropriateForCreating() && amqpProps.getKeyPath() != null) {
             // fall back to TLS configuration
             serviceProps.getSigning().setKeyPath(amqpProps.getKeyPath());
@@ -132,12 +164,33 @@ public class ApplicationConfig {
     @Bean
     @Qualifier(AuthenticationConstants.QUALIFIER_AUTHENTICATION)
     public AuthTokenHelper tokenValidator() {
-        ServiceConfigProperties amqpProps = amqpProperties();
-        AuthenticationServerConfigProperties serviceProps = serviceProperties();
+        final ServiceConfigProperties amqpProps = amqpProperties();
+        final AuthenticationServerConfigProperties serviceProps = serviceProperties();
         if (!serviceProps.getValidation().isAppropriateForValidating() && amqpProps.getCertPath() != null) {
             // fall back to TLS configuration
             serviceProps.getValidation().setCertPath(amqpProps.getCertPath());
         }
         return AuthTokenHelperImpl.forValidating(vertx(), serviceProps.getValidation());
+    }
+
+    /**
+     * Customizer for meter registry.
+     * 
+     * @return The new meter registry customizer.
+     */
+    @Bean
+    public MeterRegistryCustomizer<MeterRegistry> commonTags() {
+
+        return r -> r.config().commonTags(MetricsTags.forService(Constants.SERVICE_NAME_AUTH));
+    }
+
+    /**
+     * Exposes the health check server as a Spring bean.
+     *
+     * @return The health check server.
+     */
+    @Bean
+    public HealthCheckServer healthCheckServer() {
+        return new VertxBasedHealthCheckServer(vertx(), healthCheckConfigProperties());
     }
 }

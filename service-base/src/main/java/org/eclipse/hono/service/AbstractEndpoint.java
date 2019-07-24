@@ -1,23 +1,30 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service;
 
 import java.util.Objects;
 
+import org.eclipse.hono.tracing.TracingHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 
+import io.opentracing.SpanContext;
+import io.opentracing.Tracer;
+import io.opentracing.noop.NoopTracerFactory;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.ext.healthchecks.HealthCheckHandler;
 
 /**
@@ -35,6 +42,11 @@ public abstract class AbstractEndpoint implements Endpoint {
     protected final Logger logger = LoggerFactory.getLogger(getClass());
 
     /**
+     * The OpenTracing {@code Tracer} for tracking processing of requests.
+     */
+    protected Tracer tracer = NoopTracerFactory.create();
+
+    /**
      * Creates an endpoint for a Vertx instance.
      * 
      * @param vertx The Vertx instance to use.
@@ -44,13 +56,30 @@ public abstract class AbstractEndpoint implements Endpoint {
         this.vertx = Objects.requireNonNull(vertx);
     }
 
+    /**
+     * Sets the OpenTracing {@code Tracer} to use for tracking the processing
+     * of requests.
+     * <p>
+     * If not set explicitly, the {@code NoopTracer} from OpenTracing will
+     * be used.
+     *
+     * @param opentracingTracer The tracer.
+     */
+    @Autowired(required = false)
+    public final void setTracer(final Tracer opentracingTracer) {
+        logger.info("using OpenTracing Tracer implementation [{}]", opentracingTracer.getClass().getName());
+        this.tracer = Objects.requireNonNull(opentracingTracer);
+    }
+
     @Override
-    public final void start(final Future<Void> startFuture) {
+    public final Future<Void> start() {
+        final Future<Void> result = Future.future();
         if (vertx == null) {
-            startFuture.fail("Vert.x instance must be set");
+            result.fail(new IllegalStateException("Vert.x instance must be set"));
         } else {
-            doStart(startFuture);
+            doStart(result);
         }
+        return result;
     }
 
     /**
@@ -66,8 +95,10 @@ public abstract class AbstractEndpoint implements Endpoint {
     }
 
     @Override
-    public final void stop(final Future<Void> stopFuture) {
-        doStop(stopFuture);
+    public final Future<Void> stop() {
+        final Future<Void> result = Future.future();
+        doStop(result);
+        return result;
     }
 
     /**
@@ -102,5 +133,20 @@ public abstract class AbstractEndpoint implements Endpoint {
     @Override
     public void registerReadinessChecks(final HealthCheckHandler handler) {
         // empty default implementation
+    }
+
+    /**
+     * Creates {@code DeliveryOptions} that contain the given {@code SpanContext}.
+     * <p>
+     * To be used when sending a message on the vert.x event bus.
+     *  
+     * @param spanContext The {@code SpanContext} (may be {@code null}).
+     * @return The {@code DeliveryOptions}.
+     */
+    protected final DeliveryOptions createEventBusMessageDeliveryOptions(final SpanContext spanContext) {
+        final DeliveryOptions deliveryOptions = new DeliveryOptions();
+        deliveryOptions.setSendTimeout(3000);
+        TracingHelper.injectSpanContext(tracer, spanContext, deliveryOptions);
+        return deliveryOptions;
     }
 }

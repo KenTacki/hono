@@ -1,20 +1,20 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service.registration;
 
-import org.apache.qpid.proton.amqp.messaging.AmqpValue;
 import org.apache.qpid.proton.message.Message;
 import org.eclipse.hono.util.BaseMessageFilter;
-import org.eclipse.hono.util.RegistrationConstants;
+import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.ResourceIdentifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,24 +39,19 @@ public final class RegistrationMessageFilter extends BaseMessageFilter {
      */
      public static boolean verify(final ResourceIdentifier linkTarget, final Message msg) {
 
-         if (!verifyStandardProperties(linkTarget, msg)) {
+         final Object correlationId = MessageHelper.getCorrelationId(msg);
+
+         if (!hasValidDeviceId(linkTarget, msg)) {
              return false;
-         } else if (msg.getMessageId() == null && msg.getCorrelationId() == null) {
+         } else if (correlationId == null) {
              LOG.trace("message has neither a message-id nor correlation-id");
              return false;
-         } else if (!RegistrationConstants.isValidAction(msg.getSubject())) {
-             LOG.trace("message [{}] does not contain valid action property", msg.getMessageId());
+         } else if (msg.getSubject() == null) {
+             LOG.trace("message [correlation ID: {}] does not contain a subject", correlationId);
              return false;
          } else if (msg.getReplyTo() == null) {
-             LOG.trace("message [{}] contains no reply-to address", msg.getMessageId());
+             LOG.trace("message [correlation ID: {}] contains no reply-to address", correlationId);
              return false;
-         } else if (msg.getBody() != null) {
-             if (!(msg.getBody() instanceof AmqpValue)) {
-                 LOG.trace("message [{}] contains non-AmqpValue section payload", msg.getMessageId());
-                 return false;
-             } else {
-                 return true;
-             }
          } else {
              return true;
          }

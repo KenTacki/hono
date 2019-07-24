@@ -1,20 +1,24 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.http;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -23,8 +27,10 @@ import org.eclipse.hono.service.AbstractServiceBase;
 import org.eclipse.hono.util.Constants;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 
+import io.opentracing.contrib.vertx.ext.web.TracingHandler;
+import io.opentracing.contrib.vertx.ext.web.WebSpanDecorator;
+import io.opentracing.tag.Tags;
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
 import io.vertx.core.http.HttpServer;
@@ -41,14 +47,12 @@ import io.vertx.ext.web.handler.BodyHandler;
 public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends AbstractServiceBase<T> {
 
     /**
-     * Default file uploads directory used by Vert.x Web
+     * Default file uploads directory used by Vert.x Web.
      */
     protected static final String DEFAULT_UPLOADS_DIRECTORY = "/tmp";
 
     private final Set<HttpEndpoint> endpoints = new HashSet<>();
 
-    @Value("${spring.profiles.active:}")
-    private String activeProfiles;
     private HttpServer server;
     private HttpServer insecureServer;
 
@@ -108,12 +112,12 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
 
     @Override
     protected final int getActualPort() {
-        return (server != null ? server.actualPort() : Constants.PORT_UNCONFIGURED);
+        return server != null ? server.actualPort() : Constants.PORT_UNCONFIGURED;
     }
 
     @Override
     protected final int getActualInsecurePort() {
-        return (insecureServer != null ? insecureServer.actualPort() : Constants.PORT_UNCONFIGURED);
+        return insecureServer != null ? insecureServer.actualPort() : Constants.PORT_UNCONFIGURED;
     }
 
     /**
@@ -136,8 +140,7 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
                 .compose(s -> startEndpoints())
                 .compose(router -> {
                      return CompositeFuture.all(bindSecureHttpServer(router), bindInsecureHttpServer(router));
-                })
-                .compose(s -> onStartupSuccess());
+                }).compose(s -> onStartupSuccess());
     }
 
     /**
@@ -156,8 +159,12 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
     /**
      * Creates the router for handling requests.
      * <p>
-     * This method creates a router instance with a default route limiting the body size of requests to the maximum
-     * payload size set in the <em>config</em> properties.
+     * This method creates a router instance with
+     * <ul>
+     * <li>a default route limiting the body size of requests to the maximum
+     * payload size set in the <em>config</em> properties,</li>
+     * <li>a default failure handler.</li>
+     * </ul>
      *
      * @return The newly created router (never {@code null}).
      */
@@ -165,14 +172,44 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
 
         final Router router = Router.router(vertx);
         LOG.info("limiting size of inbound request body to {} bytes", getConfig().getMaxPayloadSize());
-        router.route().handler(BodyHandler.create().setBodyLimit(getConfig().getMaxPayloadSize())
-                .setUploadsDirectory(DEFAULT_UPLOADS_DIRECTORY));
+        router.route().handler(BodyHandler.create().setUploadsDirectory(DEFAULT_UPLOADS_DIRECTORY).setBodyLimit(getConfig().getMaxPayloadSize()));
+        addTracingHandler(router, -5);
+        // add default handler for failed routes
+        router.route().order(-1).failureHandler(new DefaultFailureHandler());
 
         return router;
     }
 
+    /**
+     * Adds a handler for adding an OpenTracing {@code Span} to the routing context.
+     *
+     * @param router The router to add the handler to.
+     * @param position The position to add the handler at.
+     */
+    private void addTracingHandler(final Router router, final int position) {
+        final Map<String, String> customTags = new HashMap<>();
+        customTags.put(Tags.COMPONENT.getKey(), getClass().getSimpleName());
+        addCustomTags(customTags);
+        final List<WebSpanDecorator> decorators = Collections.singletonList(new ComponentMetaDataDecorator(customTags));
+        final TracingHandler tracingHandler = new TracingHandler(tracer, decorators);
+        router.route().order(position).handler(tracingHandler).failureHandler(tracingHandler);
+    }
+
+    /**
+     * Adds meta data about this service to be included in OpenTracing
+     * spans that are used for tracing requests handled by this service.
+     * <p>
+     * This method is empty by default.
+     *
+     * @param customTags The existing custom tags to add to. The map will already
+     *                 include this service's simple class name under key {@link Tags#COMPONENT}.
+     */
+    protected void addCustomTags(final Map<String, String> customTags) {
+        // empty by default
+    }
+
     private void addEndpointRoutes(final Router router) {
-        for (HttpEndpoint ep : endpoints) {
+        for (final HttpEndpoint ep : endpoints) {
             ep.addRoutes(router);
         }
     }
@@ -204,7 +241,7 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
      */
     protected HttpServerOptions getHttpServerOptions() {
 
-        HttpServerOptions options = new HttpServerOptions();
+        final HttpServerOptions options = new HttpServerOptions();
         options.setHost(getConfig().getBindAddress()).setPort(getConfig().getPort(getPortDefaultValue()))
                 .setMaxChunkSize(4096);
         addTlsKeyCertOptions(options);
@@ -224,7 +261,7 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
      */
     protected HttpServerOptions getInsecureHttpServerOptions() {
 
-        HttpServerOptions options = new HttpServerOptions();
+        final HttpServerOptions options = new HttpServerOptions();
         options.setHost(getConfig().getInsecurePortBindAddress())
                 .setPort(getConfig().getInsecurePort(getInsecurePortDefaultValue())).setMaxChunkSize(4096);
         return options;
@@ -233,12 +270,12 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
     private Future<HttpServer> bindSecureHttpServer(final Router router) {
 
         if (isSecurePortEnabled()) {
-            Future<HttpServer> result = Future.future();
+            final Future<HttpServer> result = Future.future();
             final String bindAddress = server == null ? getConfig().getBindAddress() : "?";
             if (server == null) {
                 server = vertx.createHttpServer(getHttpServerOptions());
             }
-            server.requestHandler(router::accept).listen(bindAttempt -> {
+            server.requestHandler(router).listen(bindAttempt -> {
                 if (bindAttempt.succeeded()) {
                     if (getPort() == getPortDefaultValue()) {
                         LOG.info("server listens on standard secure port [{}:{}]", bindAddress, server.actualPort());
@@ -261,12 +298,12 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
     private Future<HttpServer> bindInsecureHttpServer(final Router router) {
 
         if (isInsecurePortEnabled()) {
-            Future<HttpServer> result = Future.future();
+            final Future<HttpServer> result = Future.future();
             final String bindAddress = insecureServer == null ? getConfig().getInsecurePortBindAddress() : "?";
             if (insecureServer == null) {
                 insecureServer = vertx.createHttpServer(getInsecureHttpServerOptions());
             }
-            insecureServer.requestHandler(router::accept).listen(bindAttempt -> {
+            insecureServer.requestHandler(router).listen(bindAttempt -> {
                 if (bindAttempt.succeeded()) {
                     if (getInsecurePort() == getInsecurePortDefaultValue()) {
                         LOG.info("server listens on standard insecure port [{}:{}]", bindAddress, insecureServer.actualPort());
@@ -296,12 +333,11 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
             addEndpointRoutes(router);
             addCustomRoutes(router);
             @SuppressWarnings("rawtypes")
+            final
             List<Future> endpointFutures = new ArrayList<>(endpoints.size());
-            for (HttpEndpoint ep : endpoints) {
+            for (final HttpEndpoint ep : endpoints) {
                 LOG.info("starting endpoint [name: {}, class: {}]", ep.getName(), ep.getClass().getName());
-                Future<Void> endpointFuture = Future.future();
-                endpointFutures.add(endpointFuture);
-                ep.start(endpointFuture);
+                endpointFutures.add(ep.start());
             }
             CompositeFuture.all(endpointFutures).setHandler(startup -> {
                 if (startup.succeeded()) {
@@ -314,19 +350,43 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
         return startFuture;
     }
 
+    private Future<Void> stopEndpoints() {
+
+        final Future<Void> stopFuture = Future.future();
+        @SuppressWarnings("rawtypes")
+        final
+        List<Future> endpointFutures = new ArrayList<>(endpoints.size());
+        for (final HttpEndpoint ep : endpoints) {
+            LOG.info("stopping endpoint [name: {}, class: {}]", ep.getName(), ep.getClass().getName());
+            endpointFutures.add(ep.stop());
+        }
+        CompositeFuture.all(endpointFutures).setHandler(shutdown -> {
+            if (shutdown.succeeded()) {
+                stopFuture.complete();
+            } else {
+                stopFuture.fail(shutdown.cause());
+            }
+        });
+        return stopFuture;
+
+    }
+
     @Override
     protected final Future<Void> stopInternal() {
 
         return preShutdown()
-                .compose(s -> stopServer())
-                .compose(s -> stopInsecureServer())
+                .compose(s -> {
+                    return CompositeFuture.all(stopServer(), stopInsecureServer());
+                })
+                .compose(s -> stopEndpoints())
                 .compose(v -> postShutdown());
     }
 
     private Future<Void> stopServer() {
-        Future<Void> serverStopTracker = Future.future();
+        final Future<Void> serverStopTracker = Future.future();
         if (server != null) {
-            server.close(serverStopTracker.completer());
+            LOG.info("stopping secure HTTP server [{}:{}]", getBindAddress(), getActualPort());
+            server.close(serverStopTracker);
         } else {
             serverStopTracker.complete();
         }
@@ -334,9 +394,10 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
     }
 
     private Future<Void> stopInsecureServer() {
-        Future<Void> insecureServerStopTracker = Future.future();
+        final Future<Void> insecureServerStopTracker = Future.future();
         if (insecureServer != null) {
-            insecureServer.close(insecureServerStopTracker.completer());
+            LOG.info("stopping insecure HTTP server [{}:{}]", getInsecurePortBindAddress(), getActualInsecurePort());
+            insecureServer.close(insecureServerStopTracker);
         } else {
             insecureServerStopTracker.complete();
         }
@@ -374,7 +435,7 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
      */
     @Override
     public void registerReadinessChecks(final HealthCheckHandler handler) {
-        for (HttpEndpoint ep : endpoints) {
+        for (final HttpEndpoint ep : endpoints) {
             ep.registerReadinessChecks(handler);
         }
     }
@@ -388,7 +449,7 @@ public abstract class HttpServiceBase<T extends ServiceConfigProperties> extends
      */
     @Override
     public void registerLivenessChecks(final HealthCheckHandler handler) {
-        for (HttpEndpoint ep : endpoints) {
+        for (final HttpEndpoint ep : endpoints) {
             ep.registerLivenessChecks(handler);
         }
     }

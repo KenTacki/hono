@@ -1,43 +1,64 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
  *
- */
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.amqp;
 
-import static org.hamcrest.CoreMatchers.*;
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.*;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.junit.Assert.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.hamcrest.MockitoHamcrest.booleanThat;
 
+import java.net.HttpURLConnection;
+import java.util.UUID;
+
+import org.apache.qpid.proton.amqp.Binary;
 import org.apache.qpid.proton.amqp.messaging.Accepted;
+import org.apache.qpid.proton.amqp.messaging.Data;
 import org.apache.qpid.proton.amqp.messaging.Rejected;
-import org.apache.qpid.proton.amqp.messaging.Source;
 import org.apache.qpid.proton.amqp.transport.DeliveryState;
 import org.apache.qpid.proton.message.Message;
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.client.ClientErrorException;
 import org.eclipse.hono.config.ServiceConfigProperties;
 import org.eclipse.hono.service.auth.AuthorizationService;
 import org.eclipse.hono.util.Constants;
+import org.eclipse.hono.util.EventBusMessage;
+import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.ResourceIdentifier;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.MockitoJUnitRunner;
 
+import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
+import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.EventBus;
+import io.vertx.core.eventbus.ReplyException;
+import io.vertx.core.eventbus.ReplyFailure;
+import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.JsonObject;
 import io.vertx.proton.ProtonConnection;
 import io.vertx.proton.ProtonDelivery;
@@ -46,6 +67,7 @@ import io.vertx.proton.ProtonMessageHandler;
 import io.vertx.proton.ProtonQoS;
 import io.vertx.proton.ProtonReceiver;
 import io.vertx.proton.ProtonSender;
+import io.vertx.proton.ProtonSession;
 
 /**
  * Tests verifying behavior of {@link RequestResponseEndpoint}.
@@ -53,22 +75,30 @@ import io.vertx.proton.ProtonSender;
 @RunWith(MockitoJUnitRunner.class)
 public class RequestResponseEndpointTest {
 
+    /**
+     * 
+     */
+    private static final String EVENT_BUS_ADDRESS = "requests";
     private static final ResourceIdentifier resource = ResourceIdentifier.from("endpoint", Constants.DEFAULT_TENANT, null);
+    private static final ResourceIdentifier REPLY_RESOURCE = ResourceIdentifier.from("endpoint",
+            Constants.DEFAULT_TENANT, "reply-to");
 
-    @Mock private ProtonConnection connection;
-    @Mock private EventBus         eventBus;
-    @Mock private Vertx            vertx;
+    @Mock
+    private ProtonConnection connection;
+    @Mock
+    private Vertx vertx;
+    @Mock
+    private EventBus eventBus;
 
     private ProtonReceiver receiver;
-    private ProtonSender   sender;
+    private ProtonSender sender;
+
 
     /**
      * Initializes common fixture.
      */
     @Before
     public void setUp() {
-
-        when(vertx.eventBus()).thenReturn(eventBus);
 
         receiver = mock(ProtonReceiver.class);
         when(receiver.handler(any())).thenReturn(receiver);
@@ -77,7 +107,14 @@ public class RequestResponseEndpointTest {
         when(receiver.setPrefetch(any(Integer.class))).thenReturn(receiver);
         when(receiver.setQoS(any(ProtonQoS.class))).thenReturn(receiver);
 
+        when(vertx.eventBus()).thenReturn(eventBus);
+
+        final ProtonSession session = mock(ProtonSession.class);
+        when(session.getConnection()).thenReturn(connection);
         sender = mock(ProtonSender.class);
+        when(sender.getName()).thenReturn("mocked sender");
+        when(sender.isOpen()).thenReturn(Boolean.TRUE);
+        when(sender.getSession()).thenReturn(session);
     }
 
     /**
@@ -87,7 +124,7 @@ public class RequestResponseEndpointTest {
     @Test
     public void testOnLinkAttachClosesReceiverUsingAtMostOnceQoS() {
 
-        RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
         when(receiver.getRemoteQoS()).thenReturn(ProtonQoS.AT_MOST_ONCE);
         endpoint.onLinkAttach(connection, receiver, resource);
 
@@ -100,7 +137,7 @@ public class RequestResponseEndpointTest {
     @Test
     public void testOnLinkAttachOpensReceiver() {
 
-        RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
         when(receiver.getRemoteQoS()).thenReturn(ProtonQoS.AT_LEAST_ONCE);
         endpoint.onLinkAttach(connection, receiver, resource);
 
@@ -116,10 +153,7 @@ public class RequestResponseEndpointTest {
     @Test
     public void testOnLinkAttachClosesSenderWithoutAppropriateReplyAddress() {
 
-        Source source = new Source();
-        source.setAddress("endpoint/" + Constants.DEFAULT_TENANT); // not a suitable reply-to-address: missing resource ID
-        when(sender.getRemoteSource()).thenReturn(source);
-        RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
 
         endpoint.onLinkAttach(connection, sender, resource);
 
@@ -133,101 +167,288 @@ public class RequestResponseEndpointTest {
     @Test
     public void testHandleMessageRejectsMalformedMessage() {
 
-        Message msg = ProtonHelper.message();
-        ProtonConnection con = mock(ProtonConnection.class);
-        ProtonDelivery delivery = mock(ProtonDelivery.class);
-        RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(false);
+        final Message msg = ProtonHelper.message();
+        final ProtonConnection con = mock(ProtonConnection.class);
+        final ProtonDelivery delivery = mock(ProtonDelivery.class);
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(false);
 
         // WHEN a malformed message is received
-        endpoint.handleMessage(con, receiver, resource, delivery, msg);
+        endpoint.handleRequestMessage(con, receiver, resource, delivery, msg);
 
         // THEN the link is closed and the message is rejected
-        ArgumentCaptor<DeliveryState> deliveryState = ArgumentCaptor.forClass(DeliveryState.class);
+        final ArgumentCaptor<DeliveryState> deliveryState = ArgumentCaptor.forClass(DeliveryState.class);
         verify(delivery).disposition(deliveryState.capture(), booleanThat(is(Boolean.TRUE)));
         assertThat(deliveryState.getValue(), instanceOf(Rejected.class));
         verify(receiver, never()).close();
+        verify(receiver).flow(1);
     }
 
     /**
      * Verifies that the endpoint rejects request messages for operations the client
      * is not authorized to invoke.
      */
+    @SuppressWarnings("unchecked")
     @Test
-    public void testHandleMessageRejectsUnauthorizedRequests() {
+    public void testHandleMessageSendsResponseForUnauthorizedRequests() {
 
-        Message msg = ProtonHelper.message();
+        final Message msg = ProtonHelper.message();
         msg.setSubject("unauthorized");
-        ProtonConnection con = mock(ProtonConnection.class);
-        ProtonDelivery delivery = mock(ProtonDelivery.class);
-        AuthorizationService authService = mock(AuthorizationService.class);
+        msg.setReplyTo(REPLY_RESOURCE.toString());
+        msg.setCorrelationId(UUID.randomUUID().toString());
+        final ProtonDelivery delivery = mock(ProtonDelivery.class);
+        final AuthorizationService authService = mock(AuthorizationService.class);
         when(authService.isAuthorized(any(HonoUser.class), any(ResourceIdentifier.class), anyString())).thenReturn(Future.succeededFuture(Boolean.FALSE));
-        Future<Void> processingTracker = Future.future();
-        RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true, processingTracker);
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
         endpoint.setAuthorizationService(authService);
+        endpoint.onLinkAttach(connection, sender, REPLY_RESOURCE);
 
         // WHEN a request for an operation is received that the client is not authorized to invoke
-        endpoint.handleMessage(con, receiver, resource, delivery, msg);
+        endpoint.handleRequestMessage(connection, receiver, resource, delivery, msg);
 
-        // THEN the the message is rejected
-        ArgumentCaptor<DeliveryState> deliveryState = ArgumentCaptor.forClass(DeliveryState.class);
+        // THEN the message is accepted
+        final ArgumentCaptor<DeliveryState> deliveryState = ArgumentCaptor.forClass(DeliveryState.class);
         verify(delivery).disposition(deliveryState.capture(), booleanThat(is(Boolean.TRUE)));
-        assertThat(deliveryState.getValue(), instanceOf(Rejected.class));
+        assertThat(deliveryState.getValue(), instanceOf(Accepted.class));
         verify(receiver, never()).close();
         verify(authService).isAuthorized(Constants.PRINCIPAL_ANONYMOUS, resource, "unauthorized");
-        assertFalse(processingTracker.isComplete());
+        // but not forwarded to the service instance
+        verify(eventBus, never()).send(anyString(), any(), any(DeliveryOptions.class), any(Handler.class));
+        // and a response is sent to the client with status 403
+        verify(sender).send(argThat(m -> hasStatusCode(m, HttpURLConnection.HTTP_FORBIDDEN)));
+    }
+
+    /**
+     * Verifies that the endpoint sends a response with a 503 status code to the client if a request
+     * times out internally.
+     */
+    @Test
+    public void testHandleMessageSendsResponseForTimedOutRequests() {
+
+        testHandleMessageSendsResponseWithStatusCode(new ReplyException(ReplyFailure.TIMEOUT), HttpURLConnection.HTTP_UNAVAILABLE);
+    }
+
+    /**
+     * Verifies that the endpoint sends a response with a 500 status code to the client if a request
+     * fails with an unknown error.
+     */
+    @Test
+    public void testHandleMessageSendsResponseForFailedRequests() {
+
+        testHandleMessageSendsResponseWithStatusCode(new RuntimeException(), HttpURLConnection.HTTP_INTERNAL_ERROR);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void testHandleMessageSendsResponseWithStatusCode(final Throwable error, final int expectedStatus) {
+
+        final Message msg = ProtonHelper.message();
+        msg.setSubject("get");
+        msg.setReplyTo(REPLY_RESOURCE.toString());
+        msg.setCorrelationId(UUID.randomUUID().toString());
+        final ProtonDelivery delivery = mock(ProtonDelivery.class);
+        final AuthorizationService authService = mock(AuthorizationService.class);
+        when(authService.isAuthorized(any(HonoUser.class), any(ResourceIdentifier.class), anyString())).thenReturn(Future.succeededFuture(Boolean.TRUE));
+
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+        endpoint.setAuthorizationService(authService);
+        endpoint.onLinkAttach(connection, sender, REPLY_RESOURCE);
+
+        // WHEN a request for an operation is received that the client is authorized to invoke
+        endpoint.handleRequestMessage(connection, receiver, resource, delivery, msg);
+
+        // THEN then the message is accepted
+        verify(delivery).disposition(argThat(d -> d instanceof Accepted), booleanThat(is(Boolean.TRUE)));
+        // and forwarded to the service instance
+        final ArgumentCaptor<Handler<AsyncResult<io.vertx.core.eventbus.Message<Object>>>> replyHandler = ArgumentCaptor.forClass(Handler.class);
+        verify(eventBus).send(eq(EVENT_BUS_ADDRESS), any(JsonObject.class), any(DeliveryOptions.class), replyHandler.capture());
+
+        // WHEN the service invocation times out
+        replyHandler.getValue().handle(Future.failedFuture(error));
+
+        // THEN a response with status 500 is sent to the client
+        verify(sender).send(argThat(m -> hasStatusCode(m, expectedStatus)));
+        verify(receiver).flow(1);
+    }
+
+    /**
+     * Verifies that the endpoint returns a response with status code 400
+     * for a request that contains malformed payload. 
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testHandleMessageSendsResponseForMalformedPayload() {
+
+        final Message msg = ProtonHelper.message();
+        msg.setSubject("get");
+        msg.setReplyTo(REPLY_RESOURCE.toString());
+        msg.setCorrelationId(UUID.randomUUID().toString());
+        msg.setBody(new Data(new Binary(new byte[] { 0x01, 0x02, 0x03 })));
+
+        final ProtonDelivery delivery = mock(ProtonDelivery.class);
+
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+        endpoint.onLinkAttach(connection, sender, REPLY_RESOURCE);
+
+        // WHEN a request for an operation is received that the client is authorized to invoke
+        endpoint.handleRequestMessage(connection, receiver, resource, delivery, msg);
+
+        // THEN then the message is accepted
+        verify(delivery).disposition(argThat(d -> d instanceof Accepted), booleanThat(is(Boolean.TRUE)));
+
+        // and not forwarded to the service instance
+        verify(eventBus, never()).send(eq(EVENT_BUS_ADDRESS), any(JsonObject.class), any(DeliveryOptions.class), any(Handler.class));
+
+        // and a response with the expected status is sent to the client
+        verify(sender).send(argThat(m -> hasStatusCode(m, HttpURLConnection.HTTP_BAD_REQUEST)));
+        verify(receiver).flow(1);
     }
 
     /**
      * Verifies that the endpoint processes request messages for operations the client
      * is authorized to invoke.
      */
+    @SuppressWarnings("unchecked")
     @Test
     public void testHandleMessageProcessesAuthorizedRequests() {
 
-        Message msg = ProtonHelper.message();
+        final Message msg = ProtonHelper.message();
         msg.setSubject("get");
-        ProtonConnection con = mock(ProtonConnection.class);
-        ProtonDelivery delivery = mock(ProtonDelivery.class);
-        AuthorizationService authService = mock(AuthorizationService.class);
+        msg.setReplyTo(REPLY_RESOURCE.toString());
+        final ProtonDelivery delivery = mock(ProtonDelivery.class);
+        final AuthorizationService authService = mock(AuthorizationService.class);
         when(authService.isAuthorized(any(HonoUser.class), any(ResourceIdentifier.class), anyString())).thenReturn(Future.succeededFuture(Boolean.TRUE));
 
-        Future<Void> processingTracker = Future.future();
-        RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true, processingTracker);
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
         endpoint.setAuthorizationService(authService);
+        endpoint.onLinkAttach(connection, sender, REPLY_RESOURCE);
 
         // WHEN a request for an operation is received that the client is authorized to invoke
-        endpoint.handleMessage(con, receiver, resource, delivery, msg);
+        endpoint.handleRequestMessage(connection, receiver, resource, delivery, msg);
 
         // THEN then the message gets processed
-        ArgumentCaptor<DeliveryState> deliveryState = ArgumentCaptor.forClass(DeliveryState.class);
+        final ArgumentCaptor<DeliveryState> deliveryState = ArgumentCaptor.forClass(DeliveryState.class);
         verify(delivery).disposition(deliveryState.capture(), booleanThat(is(Boolean.TRUE)));
         assertThat(deliveryState.getValue(), instanceOf(Accepted.class));
         verify(receiver, never()).close();
         verify(authService).isAuthorized(Constants.PRINCIPAL_ANONYMOUS, resource, "get");
-        assertTrue(processingTracker.isComplete());
+        // and forwarded to the service instance
+        final ArgumentCaptor<Handler<AsyncResult<io.vertx.core.eventbus.Message<Object>>>> replyHandler = ArgumentCaptor.forClass(Handler.class);
+        verify(eventBus).send(eq(EVENT_BUS_ADDRESS), any(JsonObject.class), any(DeliveryOptions.class), replyHandler.capture());
+
+        // WHEN the service implementation sends the response
+        final EventBusMessage response = EventBusMessage.forStatusCode(HttpURLConnection.HTTP_ACCEPTED);
+        final io.vertx.core.eventbus.Message<Object> reply = mock(io.vertx.core.eventbus.Message.class);
+        when(reply.body()).thenReturn(response.toJson());
+        replyHandler.getValue().handle(Future.succeededFuture(reply));
+
+        // THEN the response is sent to the client
+        verify(sender).send(any(Message.class));
+        verify(receiver).flow(1);
+    }
+
+    /**
+     * Verify that a second response link to the same address is being rejected.
+     */
+    @Test
+    public void testDuplicateSubscription() {
+
+        final ProtonConnection con1 = mock(ProtonConnection.class);
+        final ProtonConnection con2 = mock(ProtonConnection.class);
+
+        final ProtonSender sender1 = mock(ProtonSender.class);
+        final ProtonSender sender2 = mock(ProtonSender.class);
+
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+
+        // WHEN a first sender attaches
+        endpoint.onLinkAttach(con1, sender1, REPLY_RESOURCE);
+
+        // THEN open has to be called
+        verify(sender1).open();
+
+        // WHEN a second sender attaches
+        endpoint.onLinkAttach(con2, sender2, REPLY_RESOURCE);
+
+        // THEN close has to be called
+        verify(sender2).close();
+    }
+
+    /**
+     * Verify that a second response link to the same address is being accepted if the first is released before.
+     */
+    @Test
+    public void testFreeSubscription() {
+
+        final ProtonConnection con1 = mock(ProtonConnection.class);
+        final ProtonSession session1 = mock(ProtonSession.class);
+        when(session1.getConnection()).thenReturn(con1);
+        final ProtonConnection con2 = mock(ProtonConnection.class);
+
+        final ProtonSender sender1 = mock(ProtonSender.class);
+        when(sender1.getSession()).thenReturn(session1);
+        final ProtonSender sender2 = mock(ProtonSender.class);
+
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = getEndpoint(true);
+
+        // WHEN a first sender attaches
+        endpoint.onLinkAttach(con1, sender1, REPLY_RESOURCE);
+
+        // THEN open has to be called
+        verify(sender1).open();
+
+        // WHEN the connection closed
+        endpoint.onConnectionClosed(con1);
+
+        // WHEN a new link is attached
+        endpoint.onLinkAttach(con2, sender2, REPLY_RESOURCE);
+
+        // THEN open has to be called
+        verify(sender2).open();
+    }
+
+    private boolean hasStatusCode(final Message msg, final int expectedStatus) {
+        return MessageHelper.getStatus(msg) == expectedStatus;
     }
 
     private RequestResponseEndpoint<ServiceConfigProperties> getEndpoint(final boolean passesFormalVerification) {
-        return getEndpoint(passesFormalVerification, Future.future());
-    }
 
-    private RequestResponseEndpoint<ServiceConfigProperties> getEndpoint(final boolean passesFormalVerification, final Future<Void> processingTracker) {
-
-        return new RequestResponseEndpoint<ServiceConfigProperties>(vertx) {
+        final RequestResponseEndpoint<ServiceConfigProperties> endpoint = new RequestResponseEndpoint<>(vertx) {
 
             @Override
             public String getName() {
                 return "test";
             }
 
+            /**
+             * {@inheritDoc}
+             */
             @Override
-            public void processRequest(final Message message, final ResourceIdentifier targetAddress, final HonoUser clientPrincipal) {
-                processingTracker.complete();
+            protected String getEventBusServiceAddress() {
+                return EVENT_BUS_ADDRESS;
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            @Override
+            protected Future<EventBusMessage> createEventBusRequestMessage(
+                    final Message requestMessage,
+                    final ResourceIdentifier targetAddress,
+                    final HonoUser clientPrincipal) {
+
+                try {
+                    return Future.succeededFuture(EventBusMessage.forOperation(requestMessage)
+                            .setJsonPayload(requestMessage));
+                } catch (DecodeException e) {
+                    return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST));
+                }
             }
 
             @Override
-            protected Message getAmqpReply(final io.vertx.core.eventbus.Message<JsonObject> message) {
-                return null;
+            protected Message getAmqpReply(final EventBusMessage message) {
+                final Message msg = ProtonHelper.message();
+                MessageHelper.addProperty(msg, MessageHelper.APP_PROPERTY_STATUS, message.getStatus());
+                msg.setAddress(message.getReplyToAddress());
+                return msg;
             }
 
             @Override
@@ -235,5 +456,7 @@ public class RequestResponseEndpointTest {
                 return passesFormalVerification;
             }
         };
+        endpoint.setConfiguration(new ServiceConfigProperties());
+        return endpoint;
     }
 }

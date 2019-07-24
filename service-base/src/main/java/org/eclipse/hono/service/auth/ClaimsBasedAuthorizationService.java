@@ -1,21 +1,24 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth;
 
+import java.net.HttpURLConnection;
 import java.util.Objects;
 
 import org.eclipse.hono.auth.Activity;
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.client.ClientErrorException;
 import org.eclipse.hono.util.ResourceIdentifier;
 
 import io.vertx.core.Future;
@@ -35,7 +38,7 @@ public final class ClaimsBasedAuthorizationService implements AuthorizationServi
         Objects.requireNonNull(intent);
 
         if (user.isExpired()) {
-            return Future.failedFuture("user information expired");
+            return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_FORBIDDEN, "user information expired"));
         } else {
             return Future.succeededFuture(user.getAuthorities().isAuthorized(resource, intent));
         }
@@ -49,7 +52,7 @@ public final class ClaimsBasedAuthorizationService implements AuthorizationServi
         Objects.requireNonNull(operation);
 
         if (user.isExpired()) {
-            return Future.failedFuture("user information expired");
+            return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_FORBIDDEN, "user information expired"));
         } else {
             return Future.succeededFuture(user.getAuthorities().isAuthorized(resource, operation));
         }

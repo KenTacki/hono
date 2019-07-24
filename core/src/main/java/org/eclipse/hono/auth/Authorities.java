@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.auth;
 
@@ -29,7 +30,7 @@ public interface Authorities {
      * @param intent The intended activity on the resource
      * @return {@code true} if the activity is allowed.
      */
-    boolean isAuthorized(ResourceIdentifier resourceId, final Activity intent);
+    boolean isAuthorized(ResourceIdentifier resourceId, Activity intent);
 
     /**
      * Checks if these authorities include claims allowing execution of an operation of a resource.

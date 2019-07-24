@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth.impl;
 
@@ -16,7 +17,7 @@ import org.apache.qpid.proton.amqp.transport.AmqpError;
 import org.apache.qpid.proton.message.Message;
 import org.eclipse.hono.auth.HonoUser;
 import org.eclipse.hono.service.amqp.AbstractAmqpEndpoint;
-import org.eclipse.hono.service.auth.AuthenticationConstants;
+import org.eclipse.hono.util.AuthenticationConstants;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.ResourceIdentifier;
@@ -59,10 +60,10 @@ public class AuthenticationEndpoint extends AbstractAmqpEndpoint<AuthenticationS
     public final void onLinkAttach(final ProtonConnection con, final ProtonSender sender, final ResourceIdentifier targetResource) {
 
         if (ProtonQoS.AT_LEAST_ONCE.equals(sender.getRemoteQoS())) {
-            HonoUser user = Constants.getClientPrincipal(con);
+            final HonoUser user = Constants.getClientPrincipal(con);
             sender.setQoS(ProtonQoS.AT_LEAST_ONCE).open();
             logger.debug("transferring token to client...");
-            Message tokenMsg = ProtonHelper.message(user.getToken());
+            final Message tokenMsg = ProtonHelper.message(user.getToken());
             MessageHelper.addProperty(tokenMsg, AuthenticationConstants.APPLICATION_PROPERTY_TYPE, AuthenticationConstants.TYPE_AMQP_JWT);
             sender.send(tokenMsg, disposition -> {
                 if (disposition.remotelySettled()) {
@@ -80,6 +81,19 @@ public class AuthenticationEndpoint extends AbstractAmqpEndpoint<AuthenticationS
     @Override
     public final void onLinkAttach(final ProtonConnection con, final ProtonReceiver receiver, final ResourceIdentifier targetResource) {
         super.onLinkAttach(con, receiver, targetResource);
+    }
+
+    /**
+     * Handles a closed connection.
+     * <p>
+     * This implementation does nothing.
+     * </p>
+     * 
+     * @param connection The connection which got closed.
+     */
+    @Override
+    public void onConnectionClosed(final ProtonConnection connection) {
+        // we have nothing to clean up
     }
 
     @Override

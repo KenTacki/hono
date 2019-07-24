@@ -1,15 +1,35 @@
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service;
 
+import java.util.Objects;
+
+import org.eclipse.hono.config.AbstractConfig;
 import org.eclipse.hono.config.ServiceConfigProperties;
 import org.eclipse.hono.util.ConfigurationSupportingVerticle;
 import org.eclipse.hono.util.Constants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 
+import io.netty.handler.ssl.OpenSsl;
+import io.opentracing.Tracer;
+import io.opentracing.noop.NoopTracerFactory;
 import io.vertx.core.Future;
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.net.KeyCertOptions;
 import io.vertx.core.net.NetServerOptions;
+import io.vertx.core.net.OpenSSLEngineOptions;
 import io.vertx.core.net.TrustOptions;
 import io.vertx.ext.healthchecks.HealthCheckHandler;
 
@@ -26,6 +46,39 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
     protected final Logger LOG = LoggerFactory.getLogger(getClass());
 
     /**
+     * The OpenTracing {@code Tracer} for tracking processing of requests.
+     */
+    protected Tracer tracer = NoopTracerFactory.create();
+
+    private HealthCheckServer healthCheckServer = new NoopHealthCheckServer();
+
+    /**
+     * Sets the OpenTracing {@code Tracer} to use for tracking the processing
+     * of messages published by devices across Hono's components.
+     * <p>
+     * If not set explicitly, the {@code NoopTracer} from OpenTracing will
+     * be used.
+     * 
+     * @param opentracingTracer The tracer.
+     */
+    @Autowired(required = false)
+    public final void setTracer(final Tracer opentracingTracer) {
+        LOG.info("using OpenTracing Tracer implementation [{}]", opentracingTracer.getClass().getName());
+        this.tracer = Objects.requireNonNull(opentracingTracer);
+    }
+
+    /**
+     * Sets the health check server for this application.
+     *
+     * @param healthCheckServer The health check server.
+     * @throws NullPointerException if healthCheckServer is {@code null}.
+     */
+    @Autowired(required = false)
+    public void setHealthCheckServer(final HealthCheckServer healthCheckServer) {
+        this.healthCheckServer = Objects.requireNonNull(healthCheckServer);
+    }
+
+    /**
      * Starts up this component.
      * <ol>
      * <li>invokes {@link #startInternal()}</li>
@@ -35,7 +88,8 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      */
     @Override
     public final void start(final Future<Void> startFuture) {
-        startInternal().setHandler(startFuture.completer());
+        healthCheckServer.registerHealthCheckResources(this);
+        startInternal().setHandler(startFuture);
     }
 
     /**
@@ -59,8 +113,8 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      * @param stopFuture Will be completed if all of the invoked methods return a succeeded Future.
      */
     @Override
-    public final void stop(Future<Void> stopFuture) {
-        stopInternal().setHandler(stopFuture.completer());
+    public final void stop(final Future<Void> stopFuture) {
+        stopInternal().setHandler(stopFuture);
     }
 
     /**
@@ -83,6 +137,7 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      * 
      * @param handler The handler to register the checks with.
      */
+    @Override
     public void registerReadinessChecks(final HealthCheckHandler handler) {
         // empty default implementation
     }
@@ -95,6 +150,7 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      * 
      * @param handler The handler to register the checks with.
      */
+    @Override
     public void registerLivenessChecks(final HealthCheckHandler handler) {
         // empty default implementation
     }
@@ -151,7 +207,7 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
         } else {
             return Constants.PORT_UNCONFIGURED;
         }
-    };
+    }
 
     /**
      * Gets the insecure port number that this service has bound to.
@@ -182,7 +238,11 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      */
     protected final Future<Void> checkPortConfiguration() {
 
-        Future<Void> result = Future.future();
+        if (vertx != null) {
+            LOG.info("Vertx native support: {}", vertx.isNativeTransportEnabled());
+        }
+
+        final Future<Void> result = Future.future();
 
         if (getConfig().getKeyCertOptions() == null) {
             if (getConfig().getPort() >= 0) {
@@ -218,7 +278,7 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      */
     protected final int determineSecurePort() {
 
-        int port = getConfig().getPort(getPortDefaultValue());
+        final int port = getConfig().getPort(getPortDefaultValue());
 
         if (port == getPortDefaultValue()) {
             LOG.info("Server uses secure standard port {}", port);
@@ -238,7 +298,7 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
      */
     protected final int determineInsecurePort() {
 
-        int insecurePort = getConfig().getInsecurePort(getInsecurePortDefaultValue());
+        final int insecurePort = getConfig().getInsecurePort(getInsecurePortDefaultValue());
 
         if (insecurePort == 0) {
             LOG.info("Server found insecure port number configured for ephemeral port selection (port chosen automatically).");
@@ -292,10 +352,13 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
     }
 
     /**
-     * Copies TLS trust store configuration to a given set of server options.
+     * Adds TLS trust anchor configuration to a given set of server options.
      * <p>
-     * The trust store configuration is taken from <em>config</em> and will
-     * be added only if the <em>ssl</em> flag is set on the given server options.
+     * The options for configuring the server side trust anchor are
+     * determined by invoking the {@link #getServerTrustOptions()} method.
+     * However, the trust anchor options returned by that method will only be added to the
+     * given server options if its <em>ssl</em> flag is set to {@code true} and if its
+     * <em>trustOptions</em> property is {@code null}.
      * 
      * @param serverOptions The options to add configuration to.
      */
@@ -303,28 +366,76 @@ public abstract class AbstractServiceBase<T extends ServiceConfigProperties> ext
 
         if (serverOptions.isSsl() && serverOptions.getTrustOptions() == null) {
 
-            TrustOptions trustOptions = getConfig().getTrustOptions();
+            final TrustOptions trustOptions = getServerTrustOptions();
             if (trustOptions != null) {
                 serverOptions.setTrustOptions(trustOptions).setClientAuth(ClientAuth.REQUEST);
-                LOG.info("enabling TLS for client authentication");
+                LOG.info("enabling client authentication using certificates [{}]", trustOptions.getClass().getName());
             }
         }
     }
 
     /**
-     * Copies TLS key &amp; certificate configuration to a given set of server options.
+     * Gets the options for configuring the server side trust anchor.
+     * <p>
+     * This default implementation returns the options returned by
+     * {@link AbstractConfig#getTrustOptions()}.
+     * <p>
+     * Subclasses may override this method in order to e.g. use a
+     * non-key store based trust manager.
+     * 
+     * @return The trust options or {@code null} if authentication of devices
+     *         based on certificates should be disabled.
+     */
+    protected TrustOptions getServerTrustOptions() {
+        return getConfig().getTrustOptions();
+    }
+
+    /**
+     * Adds TLS key &amp; certificate configuration to a given set of server options.
      * <p>
      * If <em>config</em> contains key &amp; certificate configuration it is added to
      * the given server options and the <em>ssl</em> flag is set to {@code true}.
-     * 
+     * <p>
+     * If the server option's ssl flag is set, then the protocols from the <em>disabledTlsVersions</em>
+     * configuration property are removed from the options (and thus disabled).
+     * <p>
+     * Finally, if a working instance of Netty's <em>tcnative</em> library is found, then
+     * it is used instead of the JDK's default SSL engine.
+     *
      * @param serverOptions The options to add configuration to.
      */
     protected final void addTlsKeyCertOptions(final NetServerOptions serverOptions) {
 
-        KeyCertOptions keyCertOptions = getConfig().getKeyCertOptions();
+        final KeyCertOptions keyCertOptions = getConfig().getKeyCertOptions();
 
         if (keyCertOptions != null) {
             serverOptions.setSsl(true).setKeyCertOptions(keyCertOptions);
+        }
+
+        if (serverOptions.isSsl()) {
+
+            final boolean isOpenSslAvailable = OpenSsl.isAvailable();
+            final boolean supportsKeyManagerFactory =  OpenSsl.supportsKeyManagerFactory();
+            final boolean useOpenSsl =
+                    getConfig().isNativeTlsRequired() || (isOpenSslAvailable && supportsKeyManagerFactory);
+
+            LOG.debug("OpenSSL [available: {}, supports KeyManagerFactory: {}]",
+                    isOpenSslAvailable, supportsKeyManagerFactory);
+
+            if (useOpenSsl) {
+                LOG.info("using OpenSSL [version: {}] instead of JDK's default SSL engine",
+                        OpenSsl.versionString());
+                serverOptions.setSslEngineOptions(new OpenSSLEngineOptions());
+            } else {
+                LOG.info("using JDK's default SSL engine");
+            }
+
+            serverOptions.getEnabledSecureTransportProtocols()
+                .forEach(protocol -> serverOptions.removeEnabledSecureTransportProtocol(protocol));
+            getConfig().getSecureProtocols().forEach(protocol -> {
+                LOG.info("enabling secure protocol [{}]", protocol);
+                serverOptions.addEnabledSecureTransportProtocol(protocol);
+            });
         }
     }
 }

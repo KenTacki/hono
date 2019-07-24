@@ -1,0 +1,46 @@
+hono:
+  app:
+    maxInstances: 1
+  healthCheck:
+    port: ${vertx.health.port}
+    bindAddress: 0.0.0.0
+    keyPath: /run/secrets/hono.eclipse.org-key.pem
+    certPath: /run/secrets/hono.eclipse.org-cert.pem
+  http:
+    bindAddress: 0.0.0.0
+    insecurePortBindAddress: 0.0.0.0
+    insecurePortEnabled: true
+    keyPath: /run/secrets/hono.eclipse.org-key.pem
+    certPath: /run/secrets/hono.eclipse.org-cert.pem
+    jmsVendorPropsEnabled: true
+    maxPayloadSize: 8096
+  messaging:
+    name: 'Hono HTTP Adapter'
+    host: ${hono.amqp-network.service}${service.suffix}
+    port: 5673
+    amqpHostname: hono-internal
+  registration:
+    name: 'Hono HTTP Adapter'
+    host: ${hono.registration.service}${service.suffix}
+    port: 5672
+    credentialsPath: /run/secrets/http-adapter.credentials
+  credentials:
+    name: 'Hono HTTP Adapter'
+    host: ${hono.registration.service}${service.suffix}
+    port: 5672
+    credentialsPath: /run/secrets/http-adapter.credentials
+  tenant:
+    name: 'Hono HTTP Adapter'
+    host: ${hono.registration.service}${service.suffix}
+    port: 5672
+    credentialsPath: /run/secrets/http-adapter.credentials
+  deviceConnection:
+    name: 'Hono HTTP Adapter'
+    host: ${hono.registration.service}${service.suffix}
+    port: 5672
+    credentialsPath: /run/secrets/http-adapter.credentials
+  command:
+    name: 'Hono HTTP Adapter'
+    host: ${hono.amqp-network.service}${service.suffix}
+    port: 5673
+    amqpHostname: hono-internal

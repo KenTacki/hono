@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service.auth.impl;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -17,6 +18,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.net.HttpURLConnection;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -28,9 +30,10 @@ import org.eclipse.hono.auth.Activity;
 import org.eclipse.hono.auth.Authorities;
 import org.eclipse.hono.auth.AuthoritiesImpl;
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.client.ClientErrorException;
 import org.eclipse.hono.service.auth.AbstractHonoAuthenticationService;
 import org.eclipse.hono.service.auth.AuthTokenHelper;
-import org.eclipse.hono.service.auth.AuthenticationConstants;
+import org.eclipse.hono.util.AuthenticationConstants;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Profile;
@@ -57,6 +60,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
     private static final String FIELD_ACTIVITIES = "activities";
     private static final String FIELD_AUTHORITIES = "authorities";
     private static final String FIELD_MECHANISM = "mechanism";
+    private static final String UNAUTHORIZED = "unauthorized";
 
     private static final Map<String, Authorities> roles = new HashMap<>();
     private static final Map<String, JsonObject> users = new HashMap<>();
@@ -76,7 +80,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
      */
     @Autowired
     @Qualifier("signing")
-    public final void setTokenFactory(final AuthTokenHelper tokenFactory) {
+    public void setTokenFactory(final AuthTokenHelper tokenFactory) {
         this.tokenFactory = Objects.requireNonNull(tokenFactory);
     }
 
@@ -88,7 +92,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
             try {
                 loadPermissions();
                 startFuture.complete();
-            } catch (IOException e) {
+            } catch (final IOException e) {
                 log.error("cannot load permissions from resource {}", getConfig().getPermissionsPath(), e);
                 startFuture.fail(e);
             }
@@ -107,7 +111,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
         }
         if (getConfig().getPermissionsPath().isReadable()) {
             log.info("loading permissions from resource {}", getConfig().getPermissionsPath().getURI().toString());
-            StringBuilder json = new StringBuilder();
+            final StringBuilder json = new StringBuilder();
             load(getConfig().getPermissionsPath(), json);
             parsePermissions(new JsonObject(json.toString()));
         } else {
@@ -117,7 +121,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
 
     private void load(final Resource source, final StringBuilder target) throws IOException {
 
-        char[] buffer = new char[4096];
+        final char[] buffer = new char[4096];
         int bytesRead = 0;
         try (Reader reader = new InputStreamReader(source.getInputStream(), UTF_8)) {
             while ((bytesRead = reader.read(buffer)) > 0) {
@@ -154,7 +158,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
     }
 
     private JsonObject getUser(final String authenticationId, final String mechanism) {
-        JsonObject result = users.get(authenticationId);
+        final JsonObject result = users.get(authenticationId);
         if (result != null && mechanism.equals(result.getString(FIELD_MECHANISM))) {
             return result;
         } else {
@@ -163,10 +167,10 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
     }
 
     private Authorities getAuthorities(final JsonObject user) {
-        AuthoritiesImpl result = new AuthoritiesImpl();
+        final AuthoritiesImpl result = new AuthoritiesImpl();
         user.getJsonArray(FIELD_AUTHORITIES).forEach(obj -> {
             final String authority = (String) obj;
-            Authorities roleAuthorities = roles.get(authority);
+            final Authorities roleAuthorities = roles.get(authority);
             if (roleAuthorities != null) {
                 result.addAll(roleAuthorities);
             }
@@ -176,7 +180,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
 
     private Authorities toAuthorities(final JsonArray authorities) {
 
-        AuthoritiesImpl result = new AuthoritiesImpl();
+        final AuthoritiesImpl result = new AuthoritiesImpl();
         Objects.requireNonNull(authorities).stream()
           .filter(obj -> obj instanceof JsonObject)
           .forEach(obj -> {
@@ -185,16 +189,16 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
               final String resource = authSpec.getString(FIELD_RESOURCE);
               final String operation = authSpec.getString(FIELD_OPERATION);
               if (resource != null) {
-                  List<Activity> activityList = new ArrayList<>();
+                  final List<Activity> activityList = new ArrayList<>();
                   activities.forEach(s -> {
-                      Activity act = Activity.valueOf((String) s);
+                      final Activity act = Activity.valueOf((String) s);
                       if (act != null) {
                           activityList.add(act);
                       }
                   });
-                  result.addResource(resource, activityList.toArray(new Activity[activityList.size()]));
+                        result.addResource(resource, activityList.toArray(Activity[]::new));
               } else if (operation != null) {
-                  String[] parts = operation.split(":", 2);
+                  final String[] parts = operation.split(":", 2);
                   if (parts.length == 2) {
                       result.addOperation(parts[0], parts[1]);
                   } else {
@@ -217,22 +221,26 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
 
     @Override
     public void verifyPlain(final String authzid, final String username, final String password,
-            Handler<AsyncResult<HonoUser>> authenticationResultHandler) {
+            final Handler<AsyncResult<HonoUser>> authenticationResultHandler) {
 
         if (username == null || username.isEmpty()) {
-            authenticationResultHandler.handle(Future.failedFuture("missing username"));
+            authenticationResultHandler.handle(Future
+                    .failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST, "missing username")));
         } else if (password == null || password.isEmpty()) {
-            authenticationResultHandler.handle(Future.failedFuture("missing password"));
+            authenticationResultHandler.handle(Future
+                    .failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST, "missing password")));
         } else {
-            JsonObject user = getUser(username, AuthenticationConstants.MECHANISM_PLAIN);
+            final JsonObject user = getUser(username, AuthenticationConstants.MECHANISM_PLAIN);
             if (user == null) {
                 log.debug("no such user [{}]", username);
-                authenticationResultHandler.handle(Future.failedFuture("unauthorized"));
+                authenticationResultHandler.handle(Future
+                        .failedFuture(new ClientErrorException(HttpURLConnection.HTTP_UNAUTHORIZED, UNAUTHORIZED)));
             } else if (password.equals(user.getString("password"))) {
                 verify(username, user, authzid, authenticationResultHandler);
             } else {
                 log.debug("password mismatch");
-                authenticationResultHandler.handle(Future.failedFuture("unauthorized"));
+                authenticationResultHandler.handle(Future
+                        .failedFuture(new ClientErrorException(HttpURLConnection.HTTP_UNAUTHORIZED, UNAUTHORIZED)));
             }
         }
     }
@@ -241,15 +249,19 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
     public void verifyExternal(final String authzid, final String subjectDn, final Handler<AsyncResult<HonoUser>> authenticationResultHandler) {
 
         if (subjectDn == null || subjectDn.isEmpty()) {
-            authenticationResultHandler.handle(Future.failedFuture("missing subject DN"));
+            authenticationResultHandler.handle(Future
+                    .failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST, "missing subject DN")));
         } else {
-            String commonName = AuthenticationConstants.getCommonName(subjectDn);
+            final String commonName = AuthenticationConstants.getCommonName(subjectDn);
             if (commonName == null) {
-                authenticationResultHandler.handle(Future.failedFuture("could not determine authorization ID for subject DN"));
+                authenticationResultHandler
+                        .handle(Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST,
+                                "could not determine authorization ID for subject DN")));
             } else {
-                JsonObject user = getUser(commonName, AuthenticationConstants.MECHANISM_EXTERNAL);
+                final JsonObject user = getUser(commonName, AuthenticationConstants.MECHANISM_EXTERNAL);
                 if (user == null) {
-                    authenticationResultHandler.handle(Future.failedFuture("unauthorized"));
+                    authenticationResultHandler.handle(Future
+                            .failedFuture(new ClientErrorException(HttpURLConnection.HTTP_UNAUTHORIZED, UNAUTHORIZED)));
                 } else {
                     verify(commonName, user, authzid, authenticationResultHandler);
                 }
@@ -262,7 +274,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
         JsonObject effectiveUser = user;
         String effectiveAuthorizationId = authenticationId;
         if (authorizationId != null && !authorizationId.isEmpty() && isAuthorizedToImpersonate(user)) {
-            JsonObject impersonatedUser = users.get(authorizationId);
+            final JsonObject impersonatedUser = users.get(authorizationId);
             if (impersonatedUser != null) {
                 effectiveUser = impersonatedUser;
                 effectiveAuthorizationId = authorizationId;
@@ -275,7 +287,7 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
         final String grantedAuthorizationId = effectiveAuthorizationId;
         final Instant tokenExpirationTime = Instant.now().plus(tokenFactory.getTokenLifetime());
         final String token = tokenFactory.createToken(grantedAuthorizationId, grantedAuthorities);
-        HonoUser honoUser = new HonoUser() {
+        final HonoUser honoUser = new HonoUser() {
 
             @Override
             public String getName() {
@@ -295,6 +307,11 @@ public final class FileBasedAuthenticationService extends AbstractHonoAuthentica
             @Override
             public boolean isExpired() {
                 return !Instant.now().isBefore(tokenExpirationTime);
+            }
+
+            @Override
+            public Instant getExpirationTime() {
+                return tokenExpirationTime;
             }
         };
         authenticationResultHandler.handle(Future.succeededFuture(honoUser));

@@ -1,0 +1,29 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: hono-service-device-registry
+    version: "{{ .Chart.AppVersion }}"
+    group: {{ .Values.project.groupId }}
+  name: ${hono.registration.service}-ext
+spec:
+  ports:
+  - name: http
+    port: 28080
+    protocol: TCP
+    targetPort: http
+    nodePort: 31080
+  - name: https
+    port: 28443
+    protocol: TCP
+    targetPort: https
+    nodePort: 31443
+  selector:
+    app: hono-service-device-registry
+    group: {{ .Values.project.groupId }}
+  {{- if and ( eq .Values.useLoadBalancer true ) ( ne .Values.platform "openshift" )}}
+  type: LoadBalancer
+  {{- else}}
+  type: NodePort
+  {{- end}}

@@ -1,82 +1,123 @@
-/**
- * Copyright (c) 2016 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
  *
- */
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.util;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.CoreMatchers.is;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 
-import java.util.Base64;
-import java.util.UUID;
-
 import org.apache.qpid.proton.amqp.Binary;
-import org.apache.qpid.proton.amqp.UnsignedLong;
-import org.hamcrest.CoreMatchers;
+import org.apache.qpid.proton.amqp.messaging.Data;
+import org.apache.qpid.proton.message.Message;
 import org.junit.Test;
 
-import io.vertx.core.json.JsonObject;
+import io.vertx.core.json.DecodeException;
+import io.vertx.proton.ProtonHelper;
 
 /**
  * Tests MessageHelper.
  */
 public class MessageHelperTest {
 
-    public static final String ULONG_VALUE = "17916881237904312345";
-
-    final String messageIdString = "message-1234";
-    final UUID messageIdUUID = UUID.randomUUID();
-    final UnsignedLong messageIdULong = UnsignedLong.valueOf(ULONG_VALUE);
-    final Binary messageIdBinary = new Binary(messageIdString.getBytes(UTF_8));
-
-    final JsonObject jsonString = MessageHelper.encodeIdToJson(messageIdString);
-    final JsonObject jsonUUID   = MessageHelper.encodeIdToJson(messageIdUUID);
-    final JsonObject jsonULong  = MessageHelper.encodeIdToJson(messageIdULong);
-    final JsonObject jsonBinary = MessageHelper.encodeIdToJson(messageIdBinary);
-
+    /**
+     * Verifies that the helper adds JMS vendor properties for
+     * non-empty content type.
+     */
     @Test
-    public void testEncodeToJson() throws Exception {
+    public void testAddJmsVendorPropertiesAddsContentType() {
 
-        assertThat(jsonString.getString("type"), is("string"));
-        assertThat(jsonString.getString("id"), is(messageIdString));
-
-        assertThat(jsonULong.getString("type"), is("ulong"));
-        assertThat(jsonULong.getString("id"), is(ULONG_VALUE));
-
-        assertThat(jsonUUID.getString("type"), is("uuid"));
-        assertThat(jsonUUID.getString("id"), is(messageIdUUID.toString()));
-
-        assertThat(jsonBinary.getString("type"), is("binary"));
-        assertThat(jsonBinary.getString("id"), is(Base64.getEncoder().encodeToString(messageIdString.getBytes(UTF_8))));
+        final Message msg = ProtonHelper.message();
+        msg.setContentType("application/json");
+        MessageHelper.addJmsVendorProperties(msg);
+        assertThat(msg.getApplicationProperties().getValue().get(MessageHelper.JMS_VENDOR_PROPERTY_CONTENT_TYPE), is("application/json"));
     }
 
+    /**
+     * Verifies that the helper adds JMS vendor properties for
+     * non-empty content encoding.
+     */
     @Test
-    public void testDecodeFromJson() throws Exception {
-        final Object string = MessageHelper.decodeIdFromJson(jsonString);
-        assertThat(string, CoreMatchers.instanceOf(String.class));
-        assertThat(string, CoreMatchers.is(messageIdString));
+    public void testAddJmsVendorPropertiesAddsContentEncoding() {
 
+        final Message msg = ProtonHelper.message();
+        msg.setContentEncoding("gzip");
+        MessageHelper.addJmsVendorProperties(msg);
+        assertThat(msg.getApplicationProperties().getValue().get(MessageHelper.JMS_VENDOR_PROPERTY_CONTENT_ENCODING), is("gzip"));
+    }
 
-        final Object uuid = MessageHelper.decodeIdFromJson(jsonUUID);
-        assertThat(uuid, CoreMatchers.instanceOf(UUID.class));
-        assertThat(uuid, CoreMatchers.is(messageIdUUID));
+    /**
+     * Verifies that the helper does not add JMS vendor properties for
+     * empty content type.
+     */
+    @Test
+    public void testAddJmsVendorPropertiesRejectsEmptyContentType() {
 
-        final Object ulong = MessageHelper.decodeIdFromJson(jsonULong);
-        assertThat(ulong, CoreMatchers.instanceOf(UnsignedLong.class));
-        assertThat(ulong, CoreMatchers.is(messageIdULong));
+        final Message msg = ProtonHelper.message();
+        msg.setContentType("");
+        MessageHelper.addJmsVendorProperties(msg);
+        assertNull(msg.getApplicationProperties());
+    }
 
-        final Object binary = MessageHelper.decodeIdFromJson(jsonBinary);
-        assertThat(binary, CoreMatchers.instanceOf(Binary.class));
-        assertThat(binary, CoreMatchers.is(messageIdBinary));
+    /**
+     * Verifies that the helper does not add JMS vendor properties for
+     * empty content encoding.
+     */
+    @Test
+    public void testAddJmsVendorPropertiesRejectsEmptyContentEncoding() {
+
+        final Message msg = ProtonHelper.message();
+        msg.setContentEncoding("");
+        MessageHelper.addJmsVendorProperties(msg);
+        assertNull(msg.getApplicationProperties());
+    }
+
+    /**
+     * Verifies that the helper properly handles malformed JSON payload.
+     */
+    @Test(expected = DecodeException.class)
+    public void testGetJsonPayloadHandlesMalformedJson() {
+
+        final Message msg = ProtonHelper.message();
+        msg.setBody(new Data(new Binary(new byte[] { 0x01, 0x02, 0x03, 0x04 }))); // not JSON
+        MessageHelper.getJsonPayload(msg);
+    }
+
+    /**
+     * Verifies that the helper does not throw an exception when reading
+     * invalid UTF-8 from a message's payload.
+     */
+    @Test
+    public void testGetPayloadAsStringHandlesNonCharacterPayload() {
+
+        final Message msg = ProtonHelper.message();
+        msg.setBody(new Data(new Binary(new byte[] { (byte) 0xc3, (byte) 0x28 })));
+        assertNotNull(MessageHelper.getPayloadAsString(msg));
+
+        msg.setBody(new Data(new Binary(new byte[] { (byte) 0xf0, (byte) 0x28, (byte) 0x8c, (byte) 0xbc })));
+        assertNotNull(MessageHelper.getPayloadAsString(msg));
+    }
+
+    /**
+     * Verifies that the helper does not throw an exception when trying to
+     * read payload as JSON from an empty Data section.
+     */
+    @Test
+    public void testGetJsonPayloadHandlesEmptyDataSection() {
+
+        final Message msg = ProtonHelper.message();
+        msg.setBody(new Data(new Binary(new byte[0])));
+        assertNull(MessageHelper.getJsonPayload(msg));
     }
 }

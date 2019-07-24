@@ -1,52 +1,30 @@
-/**
- * Copyright (c) 2016 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2017 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service;
-
-import io.vertx.core.Future;
 
 /**
  * A message endpoint implementing a specific API.
  *
  */
-public interface Endpoint extends HealthCheckProvider {
+public interface Endpoint extends HealthCheckProvider, Lifecycle {
 
     /**
      * Gets the name of this endpoint.
      * <p>
-     * The Hono server uses this name to determine the {@code Endpoint} implementation that
+     * A service component uses this name to determine the {@code Endpoint} implementation that
      * is responsible for handling requests to establish a link with a target address starting with this name.
-     * </p>
      *  
-     * @return the name.
+     * @return The endpoint's name.
      */
     String getName();
-
-    /**
-     * Starts this endpoint.
-     * <p>
-     * This method should be used to allocate any required resources.
-     * However, no long running tasks should be executed.
-     * 
-     * @param startFuture Completes if this endpoint has started successfully.
-     */
-    void start(Future<Void> startFuture);
-
-    /**
-     * Stops this endpoint.
-     * <p>
-     * This method should be used to release any allocated resources.
-     * However, no long running tasks should be executed.
-     * 
-     * @param stopFuture Completes if this endpoint has stopped successfully.
-     */
-    void stop(Future<Void> stopFuture);
 }

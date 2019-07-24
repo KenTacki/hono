@@ -18,11 +18,23 @@
         "activities": [ "EXECUTE" ]
       },
       {
+        "operation": "registration/*:get",
+        "activities": [ "EXECUTE" ]
+      },
+      {
         "resource": "credentials/*",
         "activities": [ "READ", "WRITE" ]
       },
       {
         "operation": "credentials/*:get",
+        "activities": [ "EXECUTE" ]
+      },
+      {
+        "resource": "tenant",
+        "activities": [ "READ", "WRITE" ]
+      },
+      {
+        "operation": "tenant/*:*",
         "activities": [ "EXECUTE" ]
       }
     ],
@@ -48,14 +60,19 @@
     ]
   },
   "users": {
-    "rest-adapter@HONO": {
+    "http-adapter@HONO": {
       "mechanism": "PLAIN",
-      "password": "rest-secret",
-      "authorities": [ "hono-component", "protocol-adapter", "device-manager" ]
+      "password": "http-secret",
+      "authorities": [ "hono-component", "protocol-adapter" ]
     },
     "mqtt-adapter@HONO": {
       "mechanism": "PLAIN",
       "password": "mqtt-secret",
+      "authorities": [ "hono-component", "protocol-adapter" ]
+    },
+    "kura-adapter@HONO": {
+      "mechanism": "PLAIN",
+      "password": "kura-secret",
       "authorities": [ "hono-component", "protocol-adapter" ]
     },
     "hono-client@HONO": {

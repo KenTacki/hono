@@ -1,6 +1,9 @@
 hono:
   app:
     maxInstances: 1
+  healthCheck:
+    insecurePortBindAddress: 0.0.0.0
+    insecurePort: ${vertx.health.port}
   auth:
     amqp:
       insecurePortEnabled: true
@@ -9,3 +12,19 @@ hono:
       certPath: /etc/hono/certs/auth-server-cert.pem
     svc:
       permissionsPath: file:///etc/hono/permissions.json
+      signing:
+        # extend token expiration to 1h in order to prevent
+        # connection loss during test execution
+        tokenExpiration: 3600
+  vertx:
+    maxEventLoopExecuteTime: ${max.event-loop.execute-time}
+
+spring:
+  jmx:
+    enabled: false
+
+management:
+  port: -1
+
+server:
+  port: -1

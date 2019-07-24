@@ -1,33 +1,92 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.util;
 
-import io.vertx.core.json.JsonObject;
+import org.apache.qpid.proton.amqp.messaging.ApplicationProperties;
 
 /**
  * A container for the result returned by Hono's credentials API.
  *
+ * @param <T> denotes the concrete type of the payload that is conveyed in the result
  */
-public final class CredentialsResult extends RequestResponseResult {
-    private CredentialsResult(final int status, final JsonObject payload) {
-        super(status, payload);
+public final class CredentialsResult<T> extends RequestResponseResult<T> {
+
+    private CredentialsResult(
+            final int status,
+            final T payload,
+            final CacheDirective cacheDirective,
+            final ApplicationProperties applicationProperties) {
+        super(status, payload, cacheDirective, applicationProperties);
     }
 
-    public static CredentialsResult from(final int status) {
-        return new CredentialsResult(status, null);
+    /**
+     * Creates a new result for a status code.
+     * 
+     * @param status The status code indicating the outcome of the request.
+     * @param <T> The type of the payload that is conveyed in the result.
+     * @return The result.
+     */
+    public static <T> CredentialsResult<T> from(final int status) {
+        return new CredentialsResult<>(status, null, CacheDirective.noCacheDirective(), null);
     }
 
-    public static CredentialsResult from(final int status, final JsonObject payload) {
-        return new CredentialsResult(status, payload);
+    /**
+     * Creates a new result for a status code and payload.
+     * <p>
+     * This method simply invokes {@link #from(int, Object, CacheDirective)}
+     * with {@link CacheDirective#noCacheDirective()}.
+     * 
+     * @param status The status code indicating the outcome of the request.
+     * @param payload The payload to convey to the sender of the request.
+     * @param <T> The type of the payload that is conveyed in the result.
+     * @return The result.
+     */
+    public static <T> CredentialsResult<T> from(final int status, final T payload) {
+        return new CredentialsResult<>(status, payload, CacheDirective.noCacheDirective(), null);
+    }
+
+    /**
+     * Creates a new result for a status code and payload.
+     * 
+     * @param status The status code indicating the outcome of the request.
+     * @param payload The payload to convey to the sender of the request.
+     * @param cacheDirective Restrictions regarding the caching of the payload by
+     *                       the receiver of the result (may be {@code null}).
+     * @param <T> The type of the payload that is conveyed in the result.
+     * @return The result.
+     */
+    public static <T> CredentialsResult<T> from(final int status, final T payload, final CacheDirective cacheDirective) {
+        return new CredentialsResult<>(status, payload, cacheDirective, null);
+    }
+
+    /**
+     * Creates a new result for a status code and payload.
+     * 
+     * @param status The status code indicating the outcome of the request.
+     * @param payload The payload to convey to the sender of the request.
+     * @param cacheDirective Restrictions regarding the caching of the payload by
+     *                       the receiver of the result (may be {@code null}).
+     * @param applicationProperties Arbitrary properties conveyed in the response message's
+     *                              <em>application-properties</em>.
+     * @param <T> The type of the payload that is conveyed in the result.
+     * @return The result.
+     */
+    public static <T> CredentialsResult<T> from(
+            final int status,
+            final T payload,
+            final CacheDirective cacheDirective,
+            final ApplicationProperties applicationProperties) {
+        return new CredentialsResult<>(status, payload, cacheDirective, applicationProperties);
     }
 }

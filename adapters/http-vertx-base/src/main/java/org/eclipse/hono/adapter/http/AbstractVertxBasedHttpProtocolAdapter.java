@@ -1,41 +1,63 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.adapter.http;
 
-import static java.net.HttpURLConnection.*;
-
+import java.net.HttpURLConnection;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Optional;
 
-import org.eclipse.hono.client.MessageSender;
-import org.eclipse.hono.config.ServiceConfigProperties;
+import org.apache.qpid.proton.amqp.transport.ErrorCondition;
+import org.apache.qpid.proton.message.Message;
+import org.eclipse.hono.auth.Device;
+import org.eclipse.hono.client.ClientErrorException;
+import org.eclipse.hono.client.Command;
+import org.eclipse.hono.client.CommandContext;
+import org.eclipse.hono.client.CommandResponse;
+import org.eclipse.hono.client.DownstreamSender;
+import org.eclipse.hono.client.MessageConsumer;
+import org.eclipse.hono.client.ResourceConflictException;
 import org.eclipse.hono.service.AbstractProtocolAdapterBase;
+import org.eclipse.hono.service.auth.DeviceUser;
+import org.eclipse.hono.service.http.ComponentMetaDataDecorator;
+import org.eclipse.hono.service.http.DefaultFailureHandler;
+import org.eclipse.hono.service.http.HttpUtils;
+import org.eclipse.hono.service.http.TenantTraceSamplingHandler;
+import org.eclipse.hono.service.metric.MetricsTags;
+import org.eclipse.hono.service.metric.MetricsTags.Direction;
+import org.eclipse.hono.service.metric.MetricsTags.EndpointType;
+import org.eclipse.hono.service.metric.MetricsTags.ProcessingOutcome;
+import org.eclipse.hono.service.metric.MetricsTags.QoS;
+import org.eclipse.hono.service.metric.MetricsTags.TtdStatus;
+import org.eclipse.hono.tracing.TracingHelper;
 import org.eclipse.hono.util.Constants;
-import org.eclipse.hono.util.EventConstants;
-import org.eclipse.hono.util.JwtHelper;
-import org.eclipse.hono.util.TelemetryConstants;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.eclipse.hono.util.MessageHelper;
+import org.eclipse.hono.util.ResourceIdentifier;
+import org.eclipse.hono.util.TenantObject;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 
+import io.micrometer.core.instrument.Timer.Sample;
+import io.opentracing.Span;
+import io.opentracing.contrib.vertx.ext.web.TracingHandler;
+import io.opentracing.contrib.vertx.ext.web.WebSpanDecorator;
+import io.opentracing.tag.Tags;
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.HttpHeaders;
-import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerResponse;
@@ -45,49 +67,41 @@ import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
 
 /**
- * Base class for a Vert.x based Hono protocol adapter that uses the HTTP protocol. 
+ * Base class for a Vert.x based Hono protocol adapter that uses the HTTP protocol.
  * It provides access to the Telemetry and Event API.
- * 
+ *
  * @param <T> The type of configuration properties used by this service.
  */
-public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceConfigProperties> extends AbstractProtocolAdapterBase<T> {
+public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtocolAdapterProperties> extends AbstractProtocolAdapterBase<T> {
 
     /**
-     * The <em>application/json</em> content type.
-     */
-    protected static final String CONTENT_TYPE_JSON = "application/json";
-    /**
-     * The <em>application/json; charset=utf-8</em> content type.
-     */
-    protected static final String CONTENT_TYPE_JSON_UFT8 = "application/json; charset=utf-8";
-
-    /**
-     * Default file uploads directory used by Vert.x Web
+     * Default file uploads directory used by Vert.x Web.
      */
     protected static final String DEFAULT_UPLOADS_DIRECTORY = "/tmp";
 
-    /**
-     * The name of the cookie used to store a device's registration assertion JWT token.
-     */
-    protected static final String HEADER_REGISTRATION_ASSERTION = "Hono-Reg-Assertion";
-    private static final Logger LOG = LoggerFactory.getLogger(AbstractVertxBasedHttpProtocolAdapter.class);
-
-    @Value("${spring.profiles.active:}")
-    private String activeProfiles;
+    private static final String KEY_TIMER_ID = "timerId";
 
     private HttpServer server;
     private HttpServer insecureServer;
-
-    private HttpAdapterMetrics metrics;
+    private HttpAdapterMetrics metrics = HttpAdapterMetrics.NOOP;
 
     /**
-     * Sets the metrics for this service
+     * Sets the metrics for this service.
      *
      * @param metrics The metrics
      */
     @Autowired
     public final void setMetrics(final HttpAdapterMetrics metrics) {
         this.metrics = metrics;
+    }
+
+    /**
+     * Gets the metrics for this service.
+     *
+     * @return The metrics
+     */
+    protected final HttpAdapterMetrics getMetrics() {
+        return metrics;
     }
 
     /**
@@ -108,12 +122,12 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
 
     @Override
     protected final int getActualPort() {
-        return (server != null ? server.actualPort() : Constants.PORT_UNCONFIGURED);
+        return server != null ? server.actualPort() : Constants.PORT_UNCONFIGURED;
     }
 
     @Override
     protected final int getActualInsecurePort() {
-        return (insecureServer != null ? insecureServer.actualPort() : Constants.PORT_UNCONFIGURED);
+        return insecureServer != null ? insecureServer.actualPort() : Constants.PORT_UNCONFIGURED;
     }
 
     /**
@@ -122,7 +136,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
      * If no server is set using this method, then a server instance is created during
      * startup of this adapter based on the <em>config</em> properties and the server options
      * returned by {@link #getHttpServerOptions()}.
-     * 
+     *
      * @param server The http server.
      * @throws NullPointerException if server is {@code null}.
      * @throws IllegalArgumentException if the server is already started and listening on an address/port.
@@ -143,7 +157,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
      * If no server is set using this method, then a server instance is created during
      * startup of this adapter based on the <em>config</em> properties and the server options
      * returned by {@link #getInsecureHttpServerOptions()}.
-     * 
+     *
      * @param server The http server.
      * @throws NullPointerException if server is {@code null}.
      * @throws IllegalArgumentException if the server is already started and listening on an address/port.
@@ -160,26 +174,21 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
 
     @Override
     public final void doStart(final Future<Void> startFuture) {
-
         checkPortConfiguration()
             .compose(s -> preStartup())
             .compose(s -> {
-                Router router = createRouter();
+                final Router router = createRouter();
                 if (router == null) {
                     return Future.failedFuture("no router configured");
                 } else {
                     addRoutes(router);
                     return CompositeFuture.all(bindSecureHttpServer(router), bindInsecureHttpServer(router));
                 }
-            })
-            .compose(s -> {
-                connectToMessaging(null);
-                connectToDeviceRegistration(null);
-                connectToCredentialsService(null);
+            }).compose(s -> {
                 try {
                     onStartupSuccess();
                     startFuture.complete();
-                } catch (Exception e) {
+                } catch (final Exception e) {
                     LOG.error("error in onStartupSuccess", e);
                     startFuture.fail(e);
                 }
@@ -187,10 +196,74 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
     }
 
     /**
+     * Adds a handler for adding an OpenTracing {@code Span}
+     * and a Micrometer {@code Timer.Sample} to the routing context.
+     *
+     * @param router The router to add the handler to.
+     * @param position The position to add the tracing handler at.
+     */
+    private void addTracingHandler(final Router router, final int position) {
+        final Map<String, String> customTags = new HashMap<>();
+        customTags.put(Tags.COMPONENT.getKey(), getTypeName());
+        addCustomTags(customTags);
+        final List<WebSpanDecorator> decorators = new ArrayList<>();
+        decorators.add(new ComponentMetaDataDecorator(customTags));
+        addCustomSpanDecorators(decorators);
+        final TracingHandler tracingHandler = new TracingHandler(tracer, decorators);
+        router.route().order(position).handler(tracingHandler).failureHandler(tracingHandler);
+        router.route().order(position - 1).handler(ctx -> {
+            ctx.put(KEY_MICROMETER_SAMPLE, getMetrics().startTimer());
+            ctx.next();
+        });
+    }
+
+    private Sample getMicrometerSample(final RoutingContext ctx) {
+        return ctx.get(KEY_MICROMETER_SAMPLE);
+    }
+
+    private void setTtdStatus(final RoutingContext ctx, final TtdStatus status) {
+        ctx.put(TtdStatus.class.getName(), status);
+    }
+
+    private TtdStatus getTtdStatus(final RoutingContext ctx) {
+        return Optional.ofNullable((TtdStatus) ctx.get(TtdStatus.class.getName()))
+                .orElse(TtdStatus.NONE);
+    }
+
+    /**
+     * Adds meta data about this adapter to be included in OpenTracing
+     * spans that are used for tracing requests handled by this adapter.
+     * <p>
+     * This method is empty by default.
+     *
+     * @param customTags The existing custom tags to add to. The map will already
+     *                 include this adapter's {@linkplain #getTypeName() type name}
+     *                 under key {@link Tags#COMPONENT}.
+     */
+    protected void addCustomTags(final Map<String, String> customTags) {
+        // empty by default
+    }
+
+    /**
+     * Adds decorators to apply to the active OpenTracing span on certain
+     * stages of processing requests handled by this adapter.
+     * <p>
+     * This method is empty by default.
+     *
+     * @param decorators The decorators to add to. The list will already
+     *                 include a {@linkplain ComponentMetaDataDecorator decorator} for
+     *                 adding standard tags and component specific tags which can be customized by
+     *                 means of overriding {@link #addCustomTags(Map)}.
+     */
+    protected void addCustomSpanDecorators(final List<WebSpanDecorator> decorators) {
+        // empty by default
+    }
+
+    /**
      * Invoked before the http server is started.
      * <p>
      * May be overridden by sub-classes to provide additional startup handling.
-     * 
+     *
      * @return A future indicating the outcome of the operation. The start up process fails if the returned future fails.
      */
     protected Future<Void> preStartup() {
@@ -213,37 +286,37 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
      * This method creates a router instance with the following routes:
      * <ol>
      * <li>A default route limiting the body size of requests to the maximum payload size set in the <em>config</em> properties.</li>
-     * <li>A route for retrieving this adapter's current status from the resource path returned by
-     * {@link #getStatusResourcePath()} (if not {@code null}).</li>
      * </ol>
-     * 
+     *
      * @return The newly created router (never {@code null}).
      */
     protected Router createRouter() {
 
         final Router router = Router.router(vertx);
         LOG.info("limiting size of inbound request body to {} bytes", getConfig().getMaxPayloadSize());
-        router.route().handler(BodyHandler.create().setBodyLimit(getConfig().getMaxPayloadSize()).setUploadsDirectory(DEFAULT_UPLOADS_DIRECTORY));
-
-        String statusResourcePath = getStatusResourcePath();
-        if (statusResourcePath != null) {
-            router.route(HttpMethod.GET, statusResourcePath).handler(this::doGetStatus);
-        }
+        router.route().handler(BodyHandler.create(DEFAULT_UPLOADS_DIRECTORY).setBodyLimit(getConfig().getMaxPayloadSize()));
+        Optional.ofNullable(getTenantTraceSamplingHandler())
+                .ifPresent(tenantTraceSamplingHandler -> router.route().handler(tenantTraceSamplingHandler)
+                        .failureHandler(tenantTraceSamplingHandler));
+        addTracingHandler(router, -5);
+        // add default handler for failed routes
+        router.route().order(-1).failureHandler(new DefaultFailureHandler());
 
         return router;
     }
 
     /**
-     * Returns the path for the status resource.
+     * Gets a handler that determines the tenant associated with a request and applies the tenant specific trace
+     * sampling configuration (if set).
      * <p>
-     * By default, this method returns {@code /status}.
-     * Subclasses may override this method to return a different path or {@code null},
-     * in which case the status resource will be disabled.
+     * This method returns {@code null} by default.
+     * <p>
+     * Subclasses may override this method in order to return an appropriate handler.
      * 
-     * @return The resource path or {@code null}.
+     * @return The handler or {@code null}.
      */
-    protected String getStatusResourcePath() {
-        return "/status";
+    protected TenantTraceSamplingHandler getTenantTraceSamplingHandler() {
+        return null;
     }
 
     /**
@@ -251,10 +324,10 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
      * <p>
      * This method is invoked right before the http server is started with the value returned by
      * {@link AbstractVertxBasedHttpProtocolAdapter#createRouter()}.
-     * 
+     *
      * @param router The router to add the custom routes to.
      */
-    protected abstract void addRoutes(final Router router);
+    protected abstract void addRoutes(Router router);
 
     /**
      * Gets the options to use for creating the TLS secured http server.
@@ -263,13 +336,14 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
      * <p>
      * This method returns default options with the host and port being set to the corresponding values
      * from the <em>config</em> properties and using a maximum chunk size of 4096 bytes.
-     * 
+     *
      * @return The http server options.
      */
     protected HttpServerOptions getHttpServerOptions() {
 
-        HttpServerOptions options = new HttpServerOptions();
-        options.setHost(getConfig().getBindAddress()).setPort(getConfig().getPort(getPortDefaultValue())).setMaxChunkSize(4096);
+        final HttpServerOptions options = new HttpServerOptions();
+        options.setHost(getConfig().getBindAddress()).setPort(getConfig().getPort(getPortDefaultValue()))
+            .setMaxChunkSize(4096);
         addTlsKeyCertOptions(options);
         addTlsTrustOptions(options);
         return options;
@@ -282,25 +356,55 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
      * <p>
      * This method returns default options with the host and port being set to the corresponding values
      * from the <em>config</em> properties and using a maximum chunk size of 4096 bytes.
-     * 
+     *
      * @return The http server options.
      */
     protected HttpServerOptions getInsecureHttpServerOptions() {
 
-        HttpServerOptions options = new HttpServerOptions();
+        final HttpServerOptions options = new HttpServerOptions();
         options.setHost(getConfig().getInsecurePortBindAddress()).setPort(getConfig().getInsecurePort(getInsecurePortDefaultValue())).setMaxChunkSize(4096);
         return options;
+    }
+
+    /**
+     * Invoked before the message is sent to the downstream peer.
+     * <p>
+     * Subclasses may override this method in order to customize the message
+     * before it is sent, e.g. adding custom properties.
+     *
+     * @param downstreamMessage The message that will be sent downstream.
+     * @param ctx The routing context.
+     */
+    protected void customizeDownstreamMessage(final Message downstreamMessage, final RoutingContext ctx) {
+        // this default implementation does nothing
+    }
+
+    /**
+     * Gets the authenticated device identity from the routing context.
+     *
+     * @param ctx The routing context.
+     * @return The device or {@code null} if the device has not been authenticated.
+     */
+    protected final Device getAuthenticatedDevice(final RoutingContext ctx) {
+
+        return Optional.ofNullable(ctx.user()).map(user -> {
+            if (DeviceUser.class.isInstance(user)) {
+                return (Device) user;
+            } else {
+                return null;
+            }
+        }).orElse(null);
     }
 
     private Future<HttpServer> bindSecureHttpServer(final Router router) {
 
         if (isSecurePortEnabled()) {
-            Future<HttpServer> result = Future.future();
+            final Future<HttpServer> result = Future.future();
             final String bindAddress = server == null ? getConfig().getBindAddress() : "?";
             if (server == null) {
                 server = vertx.createHttpServer(getHttpServerOptions());
             }
-            server.requestHandler(router::accept).listen(done -> {
+            server.requestHandler(router).listen(done -> {
                 if (done.succeeded()) {
                     LOG.info("secure http server listening on {}:{}", bindAddress, server.actualPort());
                     result.complete(done.result());
@@ -318,12 +422,12 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
     private Future<HttpServer> bindInsecureHttpServer(final Router router) {
 
         if (isInsecurePortEnabled()) {
-            Future<HttpServer> result = Future.future();
+            final Future<HttpServer> result = Future.future();
             final String bindAddress = insecureServer == null ? getConfig().getInsecurePortBindAddress() : "?";
             if (insecureServer == null) {
                 insecureServer = vertx.createHttpServer(getInsecureHttpServerOptions());
             }
-            insecureServer.requestHandler(router::accept).listen(done -> {
+            insecureServer.requestHandler(router).listen(done -> {
                 if (done.succeeded()) {
                     LOG.info("insecure http server listening on {}:{}", bindAddress, insecureServer.actualPort());
                     result.complete(done.result());
@@ -343,42 +447,27 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
 
         try {
             preShutdown();
-        } catch (Exception e) {
+        } catch (final Exception e) {
             LOG.error("error in preShutdown", e);
         }
 
-        Future<Void> shutdownTracker = Future.future();
-        shutdownTracker.setHandler(done -> {
-            if (done.succeeded()) {
-                LOG.info("HTTP adapter has been shut down successfully");
-                stopFuture.complete();
-            } else {
-                LOG.info("error while shutting down adapter", done.cause());
-                stopFuture.fail(done.cause());
-            }
-        });
-
-        Future<Void> serverStopTracker = Future.future();
+        final Future<Void> serverStopTracker = Future.future();
         if (server != null) {
-            server.close(serverStopTracker.completer());
+            server.close(serverStopTracker);
         } else {
             serverStopTracker.complete();
         }
 
-        Future<Void> insecureServerStopTracker = Future.future();
+        final Future<Void> insecureServerStopTracker = Future.future();
         if (insecureServer != null) {
-            insecureServer.close(insecureServerStopTracker.completer());
+            insecureServer.close(insecureServerStopTracker);
         } else {
             insecureServerStopTracker.complete();
         }
 
         CompositeFuture.all(serverStopTracker, insecureServerStopTracker)
-            .compose(v -> {
-                Future<Void> honoClientStopTracker = Future.future();
-                closeClients(honoClientStopTracker.completer());
-                return honoClientStopTracker;
-            }).compose(v -> postShutdown())
-            .compose(s -> shutdownTracker.complete(), shutdownTracker);
+            .compose(v -> postShutdown())
+            .compose(s -> stopFuture.complete(), stopFuture);
     }
 
     /**
@@ -392,7 +481,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
     /**
      * Invoked after the Adapter has been shutdown successfully.
      * May be overridden by sub-classes to provide further shutdown handling.
-     * 
+     *
      * @return A future that has to be completed when this operation is finished.
      */
     protected Future<Void> postShutdown() {
@@ -400,143 +489,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
     }
 
     /**
-     * Ends a response with HTTP status code 400 (Bad Request) and an optional message.
-     * <p>
-     * The content type of the message will be <em>text/plain</em>.
-     * 
-     * @param response The HTTP response to write to.
-     * @param msg The message to write to the response's body (may be {@code null}).
-     * @throws NullPointerException if response is {@code null}.
-     */
-    protected static void badRequest(final HttpServerResponse response, final String msg) {
-        badRequest(response, msg, null);
-    }
-
-    /**
-     * Ends a response with HTTP status code 400 (Bad Request) and an optional message.
-     *
-     * @param response The HTTP response to write to.
-     * @param msg The message to write to the response's body (may be {@code null}).
-     * @param contentType The content type of the message (if {@code null}, then <em>text/plain</em> is used}.
-     * @throws NullPointerException if response is {@code null}.
-     */
-    protected static void badRequest(final HttpServerResponse response, final String msg, final String contentType) {
-        LOG.debug("Bad request: {}", msg);
-        endWithStatus(response, HTTP_BAD_REQUEST, null, msg, contentType);
-    }
-
-    /**
-     * Ends a response with HTTP status code 500 (Internal Error) and an optional message.
-     * <p>
-     * The content type of the message will be <em>text/plain</em>.
-     *
-     * @param response The HTTP response to write to.
-     * @param msg The message to write to the response's body (may be {@code null}).
-     * @throws NullPointerException if response is {@code null}.
-     */
-    protected static void internalServerError(final HttpServerResponse response, final String msg) {
-        LOG.debug("Internal server error: {}", msg);
-        endWithStatus(response, HTTP_INTERNAL_ERROR, null, msg, null);
-    }
-
-    /**
-     * Ends a response with HTTP status code 503 (Service Unavailable) and sets the <em>Retry-After</em> HTTP header
-     * to a given number of seconds.
-     * 
-     * @param response The HTTP response to write to.
-     * @param retryAfterSeconds The number of seconds to set in the header.
-     */
-    protected static void serviceUnavailable(final HttpServerResponse response, final int retryAfterSeconds) {
-        serviceUnavailable(response, retryAfterSeconds, null, null);
-    }
-
-    /**
-     * Ends a response with HTTP status code 503 (Service Unavailable) and sets the <em>Retry-After</em> HTTP header
-     * to a given number of seconds.
-     * 
-     * @param response The HTTP response to write to.
-     * @param retryAfterSeconds The number of seconds to set in the header.
-     * @param detail The message to write to the response's body (may be {@code null}).
-     * @param contentType The content type of the message (if {@code null}, then <em>text/plain</em> is used}.
-     * @throws NullPointerException if response is {@code null}.
-     */
-    protected static void serviceUnavailable(final HttpServerResponse response, final int retryAfterSeconds,
-            final String detail, final String contentType) {
-
-        LOG.debug("Service unavailable: {}", detail);
-        Map<CharSequence, CharSequence> headers = new HashMap<>(2);
-        headers.put(HttpHeaders.CONTENT_TYPE, contentType != null ? contentType : "text/plain");
-        headers.put(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
-        endWithStatus(response, HTTP_UNAVAILABLE, headers, detail, contentType);
-    }
-
-    /**
-     * Ends a response with a given HTTP status code and detail message.
-     *
-     * @param response The HTTP response to write to.
-     * @param status The status code to write to the response.
-     * @param headers HTTP headers to set on the response (may be {@code null}).
-     * @param detail The message to write to the response's body (may be {@code null}).
-     * @param contentType The content type of the message (if {@code null}, then <em>text/plain</em> is used}.
-     * @throws NullPointerException if response is {@code null}.
-     */
-    protected static void endWithStatus(final HttpServerResponse response, final int status,
-            final Map<CharSequence, CharSequence> headers, final String detail, final String contentType) {
-
-        Objects.requireNonNull(response);
-        response.setStatusCode(status);
-        if (headers != null) {
-            for (Entry<CharSequence, CharSequence> header : headers.entrySet()) {
-                response.putHeader(header.getKey(), header.getValue());
-            }
-        }
-        if (detail != null) {
-            if (contentType != null) {
-                response.putHeader(HttpHeaders.CONTENT_TYPE, contentType);
-            } else {
-                response.putHeader(HttpHeaders.CONTENT_TYPE, "text/plain");
-            }
-            response.end(detail);
-        } else {
-            response.end();
-        }
-    }
-
-    private void doGetStatus(final RoutingContext ctx) {
-        JsonObject result = new JsonObject(getHonoMessagingClient().getConnectionStatus());
-        result.put("active profiles", activeProfiles);
-        result.put("senders", getHonoMessagingClient().getSenderStatus());
-        adaptStatusResource(result);
-        ctx.response()
-            .putHeader(HttpHeaders.CONTENT_TYPE, CONTENT_TYPE_JSON)
-            .end(result.encodePrettily());
-    }
-
-    /**
-     * Adapts the JsonObject returned on a status request.
-     * Subclasses can add their own properties here.
-     * 
-     * @param status status object to be adapted
-     */
-    protected void adaptStatusResource(final JsonObject status) {
-        // empty
-    }
-
-    /**
-     * Gets the value of the <em>Content-Type</em> HTTP header for a request.
-     * 
-     * @param ctx The routing context containing the HTTP request.
-     * @return The content type or {@code null} if the request doesn't contain a
-     *         <em>Content-Type</em> header.
-     * @throws NullPointerException if context is {@code null}.
-     */
-    protected static String getContentType(final RoutingContext ctx) {
-
-        return Objects.requireNonNull(ctx).request().getHeader(HttpHeaders.CONTENT_TYPE);
-    }
-
-    /**
-     * Uploads the body of an HTTP request as a telemetry message to the Hono server.
+     * Uploads the body of an HTTP request as a telemetry message to Hono.
      * <p>
      * This method simply invokes {@link #uploadTelemetryMessage(RoutingContext, String, String, Buffer, String)}
      * with objects retrieved from the routing context.
@@ -553,20 +506,17 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
                 Objects.requireNonNull(tenant),
                 Objects.requireNonNull(deviceId),
                 ctx.getBody(),
-                getContentType(ctx));
+                HttpUtils.getContentType(ctx));
     }
 
     /**
-     * Uploads a telemetry message to the Hono server.
+     * Uploads a telemetry message to Hono.
      * <p>
-     * Depending on the outcome of the attempt to upload the message to Hono, the HTTP response's code is
-     * set as follows:
-     * <ul>
-     * <li>202 (Accepted) - if the telemetry message has been sent to the Hono server.</li>
-     * <li>400 (Bad Request) - if the message payload is {@code null} or empty or if the content type is {@code null}.</li>
-     * <li>503 (Service Unavailable) - if the message could not be sent to the Hono server, e.g. due to lack of connection or credit.</li>
-     * </ul>
-     * 
+     * This method always sends a response to the device. The status code will be set
+     * as specified in the
+     * <a href="https://www.eclipse.org/hono/docs/user-guide/http-adapter/#publish-telemetry-data-authenticated-device">
+     * HTTP adapter User Guide</a>.
+     *
      * @param ctx The context to retrieve cookies and the HTTP response from.
      * @param tenant The tenant of the device that has produced the data.
      * @param deviceId The id of the device that has produced the data.
@@ -584,11 +534,11 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
                 payload,
                 contentType,
                 getTelemetrySender(tenant),
-                TelemetryConstants.TELEMETRY_ENDPOINT);
+                MetricsTags.EndpointType.TELEMETRY);
     }
 
     /**
-     * Uploads the body of an HTTP request as an event message to the Hono server.
+     * Uploads the body of an HTTP request as an event message to Hono.
      * <p>
      * This method simply invokes {@link #uploadEventMessage(RoutingContext, String, String, Buffer, String)}
      * with objects retrieved from the routing context.
@@ -605,20 +555,17 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
                 Objects.requireNonNull(tenant),
                 Objects.requireNonNull(deviceId),
                 ctx.getBody(),
-                getContentType(ctx));
+                HttpUtils.getContentType(ctx));
     }
 
     /**
-     * Uploads an event message to the Hono server.
+     * Uploads an event message to Hono.
      * <p>
-     * Depending on the outcome of the attempt to upload the message to Hono, the HTTP response's code is
-     * set as follows:
-     * <ul>
-     * <li>202 (Accepted) - if the telemetry message has been sent to the Hono server.</li>
-     * <li>400 (Bad Request) - if the message payload is {@code null} or empty or if the content type is {@code null}.</li>
-     * <li>503 (Service Unavailable) - if the message could not be sent to the Hono server, e.g. due to lack of connection or credit.</li>
-     * </ul>
-     * 
+     * This method always sends a response to the device. The status code will be set
+     * as specified in the
+     * <a href="https://www.eclipse.org/hono/docs/user-guide/http-adapter/#publish-an-event-authenticated-device">
+     * HTTP adapter User Guide</a>.
+     *
      * @param ctx The context to retrieve cookies and the HTTP response from.
      * @param tenant The tenant of the device that has produced the data.
      * @param deviceId The id of the device that has produced the data.
@@ -636,81 +583,612 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends ServiceCon
                 payload,
                 contentType,
                 getEventSender(tenant),
-                EventConstants.EVENT_ENDPOINT);
+                MetricsTags.EndpointType.EVENT);
     }
 
-    private void doUploadMessage(final RoutingContext ctx, final String tenant, final String deviceId,
-            final Buffer payload, final String contentType, final Future<MessageSender> senderTracker,
-            final String endpointName) {
+    private void doUploadMessage(
+            final RoutingContext ctx,
+            final String tenant,
+            final String deviceId,
+            final Buffer payload,
+            final String contentType,
+            final Future<DownstreamSender> senderTracker,
+            final MetricsTags.EndpointType endpoint) {
 
-        if (contentType == null) {
-            badRequest(ctx.response(), String.format("%s header is missing", HttpHeaders.CONTENT_TYPE));
-            metrics.incrementUndeliverableHttpMessages(endpointName,tenant);
-        } else if (payload == null || payload.length() == 0) {
-            badRequest(ctx.response(), "missing body");
-            metrics.incrementUndeliverableHttpMessages(endpointName,tenant);
-        } else {
-            
-            final Future<String> tokenTracker = getRegistrationAssertionHeader(ctx, tenant, deviceId);
+        if (!isPayloadOfIndicatedType(payload, contentType)) {
+            HttpUtils.badRequest(ctx, String.format("content type [%s] does not match payload", contentType));
+            return;
+        }
+        final String qosHeaderValue = ctx.request().getHeader(Constants.HEADER_QOS_LEVEL);
+        final MetricsTags.QoS qos = getQoSLevel(endpoint, qosHeaderValue);
+        if (qos == MetricsTags.QoS.UNKNOWN) {
+            HttpUtils.badRequest(ctx, "unsupported QoS-Level header value");
+            return;
+        }
 
-            CompositeFuture.all(tokenTracker, senderTracker).setHandler(s -> {
-                if (s.failed()) {
-                    if (tokenTracker.failed()) {
-                        LOG.debug("could not get registration assertion [tenant: {}, device: {}]", tenant, deviceId, s.cause());
-                        endWithStatus(ctx.response(), HTTP_FORBIDDEN, null, null, null);
+        final Device authenticatedDevice = getAuthenticatedDevice(ctx);
+        final Span currentSpan = TracingHelper
+                .buildChildSpan(tracer, TracingHandler.serverSpanContext(ctx),
+                        "upload " + endpoint.getCanonicalName())
+                .ignoreActiveSpan()
+                .withTag(Tags.COMPONENT.getKey(), getTypeName())
+                .withTag(Tags.SPAN_KIND.getKey(), Tags.SPAN_KIND_CLIENT)
+                .withTag(MessageHelper.APP_PROPERTY_TENANT_ID, tenant)
+                .withTag(MessageHelper.APP_PROPERTY_DEVICE_ID, deviceId)
+                .withTag(TracingHelper.TAG_AUTHENTICATED.getKey(), authenticatedDevice != null)
+                .withTag(Constants.HEADER_QOS_LEVEL, qos.asTag().getValue())
+                .start();
+
+        final Future<Void> responseReady = Future.future();
+        final Future<JsonObject> tokenTracker = getRegistrationAssertion(
+                tenant,
+                deviceId,
+                authenticatedDevice,
+                currentSpan.context());
+        final int payloadSize = Optional.ofNullable(payload)
+                .map(ok -> payload.length())
+                .orElse(0);
+        final Future<TenantObject> tenantTracker = getTenantConfiguration(tenant, currentSpan.context());
+        final Future<TenantObject> tenantValidationTracker = tenantTracker
+                .compose(tenantObject -> CompositeFuture
+                        .all(isAdapterEnabled(tenantObject), checkMessageLimit(tenantObject, payloadSize))
+                        .map(success -> tenantObject));
+
+        // we only need to consider TTD if the device and tenant are enabled and the adapter
+        // is enabled for the tenant
+        final Future<Integer> ttdTracker = CompositeFuture.all(tenantValidationTracker, tokenTracker)
+                .compose(ok -> {
+                    final Integer ttdParam = getTimeUntilDisconnectFromRequest(ctx);
+                    return getTimeUntilDisconnect(tenantTracker.result(), ttdParam).map(effectiveTtd -> {
+                        if (effectiveTtd != null) {
+                            currentSpan.setTag(MessageHelper.APP_PROPERTY_DEVICE_TTD, effectiveTtd);
+                        }
+                        return effectiveTtd;
+                    });
+                });
+        final Future<MessageConsumer> commandConsumerTracker = ttdTracker
+                .compose(ttd -> createCommandConsumer(ttd, tenantTracker.result(), deviceId, ctx, responseReady,
+                        currentSpan));
+
+        CompositeFuture.all(senderTracker, commandConsumerTracker)
+                .compose(ok -> {
+
+                    final DownstreamSender sender = senderTracker.result();
+
+                    final Integer ttd = Optional.ofNullable(commandConsumerTracker.result()).map(c -> ttdTracker.result())
+                            .orElse(null);
+                    final Message downstreamMessage = newMessage(
+                            ResourceIdentifier.from(endpoint.getCanonicalName(), tenant, deviceId),
+                            ctx.request().uri(),
+                            contentType,
+                            payload,
+                            tenantTracker.result(),
+                            tokenTracker.result(),
+                            ttd);
+                    customizeDownstreamMessage(downstreamMessage, ctx);
+
+                    addConnectionCloseHandler(ctx, commandConsumerTracker.result(), tenant, deviceId, currentSpan);
+
+                    if (MetricsTags.QoS.AT_MOST_ONCE.equals(qos)) {
+                        return CompositeFuture.all(
+                                sender.send(downstreamMessage, currentSpan.context()),
+                                responseReady)
+                                .map(s -> (Void) null);
                     } else {
-                        serviceUnavailable(ctx.response(), 5);
+                        // unsettled
+                        return CompositeFuture.all(
+                                sender.sendAndWaitForOutcome(downstreamMessage, currentSpan.context()),
+                                responseReady)
+                                .map(s -> (Void) null);
                     }
-                    metrics.incrementUndeliverableHttpMessages(endpointName,tenant);
-                } else {
-                    sendToHono(ctx.response(), deviceId, payload, contentType, tokenTracker.result(),
-                            senderTracker.result(), tenant, endpointName);
-                }
+                }).recover(t -> {
+            if (t instanceof ResourceConflictException) {
+                // simply return an empty response
+                LOG.debug("ignoring empty notification [tenant: {}, device-id: {}], command consumer is already in use",
+                        tenant, deviceId);
+                return Future.succeededFuture();
+            } else {
+                return Future.failedFuture(t);
+            }
+        }).map(proceed -> {
+
+            if (ctx.response().closed()) {
+                LOG.debug("failed to send http response for [{}] message from device [tenantId: {}, deviceId: {}]: response already closed",
+                        endpoint, tenant, deviceId);
+                TracingHelper.logError(currentSpan, "failed to send HTTP response to device: response already closed");
+                currentSpan.finish();
+            } else {
+                final CommandContext commandContext = ctx.get(CommandContext.KEY_COMMAND_CONTEXT);
+                setResponsePayload(ctx.response(), commandContext, currentSpan);
+                ctx.addBodyEndHandler(ok -> {
+                    LOG.trace("successfully processed [{}] message for device [tenantId: {}, deviceId: {}]",
+                            endpoint, tenant, deviceId);
+                    if (commandContext != null) {
+                        commandContext.getCurrentSpan().log("forwarded command to device in HTTP response body");
+                        commandContext.accept();
+                        metrics.reportCommand(
+                                commandContext.getCommand().isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                                tenant,
+                                tenantTracker.result(),
+                                ProcessingOutcome.FORWARDED,
+                                commandContext.getCommand().getPayloadSize(),
+                                getMicrometerSample(commandContext));
+                    }
+                    metrics.reportTelemetry(
+                            endpoint,
+                            tenant,
+                            tenantTracker.result(),
+                            ProcessingOutcome.FORWARDED,
+                            qos,
+                            payload.length(),
+                            getTtdStatus(ctx),
+                            getMicrometerSample(ctx));
+                    currentSpan.finish();
+                    // the command consumer is used for a single request only
+                    // we can close the consumer only AFTER we have accepted a
+                    // potential command
+                    Optional.ofNullable(commandConsumerTracker.result()).ifPresent(consumer -> consumer.close(null));
+                });
+                ctx.response().exceptionHandler(t -> {
+                    LOG.debug("failed to send http response for [{}] message from device [tenantId: {}, deviceId: {}]",
+                            endpoint, tenant, deviceId, t);
+                    if (commandContext != null) {
+                        commandContext.getCurrentSpan().log("failed to forward command to device in HTTP response body");
+                        TracingHelper.logError(commandContext.getCurrentSpan(), t);
+                        commandContext.release();
+                        metrics.reportCommand(
+                                commandContext.getCommand().isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                                tenant,
+                                tenantTracker.result(),
+                                ProcessingOutcome.UNDELIVERABLE,
+                                commandContext.getCommand().getPayloadSize(),
+                                getMicrometerSample(commandContext));
+                    }
+                    currentSpan.log("failed to send HTTP response to device");
+                    TracingHelper.logError(currentSpan, t);
+                    currentSpan.finish();
+                    // the command consumer is used for a single request only
+                    // we can close the consumer only AFTER we have released a
+                    // potential command
+                    Optional.ofNullable(commandConsumerTracker.result()).ifPresent(consumer -> consumer.close(null));
+                });
+                ctx.response().end();
+            }
+
+            return proceed;
+
+        }).recover(t -> {
+
+            LOG.debug("cannot process [{}] message from device [tenantId: {}, deviceId: {}]",
+                    endpoint, tenant, deviceId, t);
+            final CommandContext commandContext = ctx.get(CommandContext.KEY_COMMAND_CONTEXT);
+            if (commandContext != null) {
+                commandContext.release();
+            }
+            // the command consumer is used for a single request only
+            // we can close the consumer only AFTER we have released a
+            // potential command
+            Optional.ofNullable(commandConsumerTracker.result()).ifPresent(consumer -> consumer.close(null));
+
+            final ProcessingOutcome outcome;
+            if (ClientErrorException.class.isInstance(t)) {
+                outcome = ProcessingOutcome.UNPROCESSABLE;
+                ctx.fail(t);
+            } else {
+                outcome = ProcessingOutcome.UNDELIVERABLE;
+                HttpUtils.serviceUnavailable(ctx, 2, "temporarily unavailable");
+            }
+            metrics.reportTelemetry(
+                    endpoint,
+                    tenant,
+                    tenantTracker.result(),
+                    outcome,
+                    qos,
+                    payload.length(),
+                    getTtdStatus(ctx),
+                    getMicrometerSample(ctx));
+            TracingHelper.logError(currentSpan, t);
+            currentSpan.finish();
+            return Future.failedFuture(t);
+        });
+    }
+
+    /**
+     * Extract the "time till disconnect" from the provided request.
+     * <p>
+     * The default behavior is to call {@link HttpUtils#getTimeTillDisconnect(RoutingContext)}. The method may be
+     * overridden by protocol adapters that which not to use the default behavior.
+     *
+     * @param ctx The context to extract the TTD from.
+     * @return The TTD in seconds, or {@code null} in case none is set, or it could not be parsed to an integer.
+     */
+    protected Integer getTimeUntilDisconnectFromRequest(final RoutingContext ctx) {
+        return HttpUtils.getTimeTillDisconnect(ctx);
+    }
+
+    /**
+     * Adds a handler for tidying up when a device closes the HTTP connection before
+     * a response could be sent.
+     * <p>
+     * The handler will close the message consumer and increment the metric for expired TTDs.
+     * 
+     * @param ctx The context to retrieve cookies and the HTTP response from.
+     * @param messageConsumer The message consumer to receive a command. If {@code null}, no handler is added.
+     * @param tenantId The tenant that the device belongs to.
+     * @param deviceId The identifier of the device.
+     * @param currentSpan The <em>OpenTracing</em> Span used for tracking the processing of the request.
+     */
+    private void addConnectionCloseHandler(
+            final RoutingContext ctx,
+            final MessageConsumer messageConsumer,
+            final String tenantId,
+            final String deviceId,
+            final Span currentSpan) {
+
+        if (messageConsumer != null && !ctx.response().closed()) {
+            ctx.response().closeHandler(v -> {
+                LOG.debug("device [tenant: {}, device-id: {}] closed connection before response could be sent",
+                        tenantId, deviceId);
+                currentSpan.log("device closed connection");
+                cancelCommandReceptionTimer(ctx);
+                messageConsumer.close(null);
             });
         }
     }
 
-    private void sendToHono(final HttpServerResponse response, final String deviceId, final Buffer payload,
-            final String contentType, final String token, final MessageSender sender, final String tenant,
-            final String endpointName) {
-
-        boolean accepted = sender.send(deviceId, payload.getBytes(), contentType, token);
-        if (accepted) {
-            response.setStatusCode(HTTP_ACCEPTED).end();
-            metrics.incrementProcessedHttpMessages(endpointName,tenant);
+    private void setResponsePayload(final HttpServerResponse response, final CommandContext commandContext, final Span currentSpan) {
+        if (commandContext == null) {
+            setEmptyResponsePayload(response, currentSpan);
         } else {
-            serviceUnavailable(response, 2,
-                    "resource limit exceeded, please try again later",
-                    "text/plain");
-            metrics.incrementUndeliverableHttpMessages(endpointName,tenant);
+            setNonEmptyResponsePayload(response, commandContext, currentSpan);
         }
     }
 
     /**
-     * Gets a registration assertion for a device.
+     * Respond to a request with an empty command response.
      * <p>
-     * This method first tries to retrieve the assertion from request header {@link #HEADER_REGISTRATION_ASSERTION}.
-     * If the header exists and contains a value representing a non-expired assertion, a completed future
-     * containing the header field's value is returned.
-     * Otherwise a new assertion is retrieved from the Device Registration service and included in the response
-     * using the same header name.
-     * 
-     * @param ctx The routing context to use for getting/setting the cookie.
-     * @param tenantId The tenant that the device belongs to.
-     * @param deviceId The device to get the assertion for.
-     * @return A future containing the assertion.
+     * The default implementation simply sets a status of {@link HttpURLConnection#HTTP_ACCEPTED}.
+     *
+     * @param response The response to update.
+     * @param currentSpan The current tracing span.
      */
-    protected final Future<String> getRegistrationAssertionHeader(final RoutingContext ctx, final String tenantId,
-            final String deviceId) {
+    protected void setEmptyResponsePayload(final HttpServerResponse response, final Span currentSpan) {
+        response.setStatusCode(HttpURLConnection.HTTP_ACCEPTED);
+    }
 
-        String assertion = ctx.request().getHeader(HEADER_REGISTRATION_ASSERTION);
-        if (assertion != null && !JwtHelper.isExpired(assertion, 5)) {
-            return Future.succeededFuture(assertion);
+    /**
+     * Response to a request with a non-empty command response.
+     * <p>
+     * The default implementation sets the command headers and the status to {@link HttpURLConnection#HTTP_OK}.
+     *
+     * @param response The response to update.
+     * @param commandContext The command context, will not be {@code null}.
+     * @param currentSpan The current tracing span.
+     */
+    protected void setNonEmptyResponsePayload(final HttpServerResponse response, final CommandContext commandContext,
+            final Span currentSpan) {
+
+        final Command command = commandContext.getCommand();
+        response.putHeader(Constants.HEADER_COMMAND, command.getName());
+        currentSpan.setTag(Constants.HEADER_COMMAND, command.getName());
+        LOG.debug("adding command [name: {}, request-id: {}] to response for device [tenant-id: {}, device-id: {}]",
+                command.getName(), command.getRequestId(), command.getTenant(), command.getDeviceId());
+
+        if (!command.isOneWay()) {
+            response.putHeader(Constants.HEADER_COMMAND_REQUEST_ID, command.getRequestId());
+            currentSpan.setTag(Constants.HEADER_COMMAND_REQUEST_ID, command.getRequestId());
+        }
+
+        response.setStatusCode(HttpURLConnection.HTTP_OK);
+        HttpUtils.setResponseBody(response, command.getPayload(), command.getContentType());
+    }
+
+    /**
+     * Creates a consumer for command messages to be sent to a device.
+     *
+     * @param ttdSecs The number of seconds the device waits for a command.
+     * @param tenantObject The tenant configuration object.
+     * @param deviceId The identifier of the device.
+     * @param ctx The device's currently executing HTTP request.
+     * @param responseReady A future to complete once one of the following conditions are met:
+     *              <ul>
+     *              <li>the request did not include a <em>hono-ttd</em> parameter or</li>
+     *              <li>a command has been received and the response ready future has not yet been
+     *              completed or</li>
+     *              <li>the ttd has expired</li>
+     *              </ul>
+     * @param currentSpan The OpenTracing Span to use for tracking the processing
+     *                       of the request.
+     * @return A future indicating the outcome of the operation.
+     *         <p>
+     *         The future will be completed with the created message consumer or {@code null}, if
+     *         the response can be sent back to the device without waiting for a command.
+     *         <p>
+     *         The future will be failed with a {@code ServiceInvocationException} if the
+     *         message consumer could not be created.
+     *         The future will be failed with a {@code ResourceConflictException} if the
+     *         message consumer for the device is already in use and the request contains
+     *         an empty notification (which does not need to be forwarded downstream).
+     * @throws NullPointerException if any of the parameters other than TTD are {@code null}.
+     */
+    protected final Future<MessageConsumer> createCommandConsumer(
+            final Integer ttdSecs,
+            final TenantObject tenantObject,
+            final String deviceId,
+            final RoutingContext ctx,
+            final Future<Void> responseReady,
+            final Span currentSpan) {
+
+        Objects.requireNonNull(tenantObject);
+        Objects.requireNonNull(deviceId);
+        Objects.requireNonNull(ctx);
+        Objects.requireNonNull(responseReady);
+        Objects.requireNonNull(currentSpan);
+
+        if (ttdSecs == null || ttdSecs <= 0) {
+            // no need to wait for a command
+            responseReady.tryComplete();
+            return Future.succeededFuture();
         } else {
-            return getRegistrationAssertion(tenantId, deviceId).compose(token -> {
-                ctx.response().putHeader(HEADER_REGISTRATION_ASSERTION, token);
-                return Future.succeededFuture(token);
-            });
+            currentSpan.setTag(MessageHelper.APP_PROPERTY_DEVICE_TTD, ttdSecs);
+            return getCommandConsumerFactory().createCommandConsumer(
+                    tenantObject.getTenantId(),
+                    deviceId,
+                    commandContext -> {
+
+                        Tags.COMPONENT.set(commandContext.getCurrentSpan(), getTypeName());
+                        final Command command = commandContext.getCommand();
+                        final Sample commandSample = getMetrics().startTimer();
+                        if (isCommandValid(command, currentSpan)) {
+                            if (responseReady.isComplete()) {
+                                // the timer has already fired, release the command
+                                getMetrics().reportCommand(
+                                        command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                                        tenantObject.getTenantId(),
+                                        tenantObject,
+                                        ProcessingOutcome.UNDELIVERABLE,
+                                        command.getPayloadSize(),
+                                        commandSample);
+                                LOG.debug("command for device has already fired [tenantId: {}, deviceId: {}]",
+                                        tenantObject.getTenantId(), deviceId);
+                                commandContext.release();
+                            } else {
+                                checkMessageLimit(tenantObject, command.getPayloadSize())
+                                        .setHandler(result -> {
+                                            if (result.succeeded()) {
+                                                addMicrometerSample(commandContext, commandSample);
+                                                // put command context to routing context and notify
+                                                ctx.put(CommandContext.KEY_COMMAND_CONTEXT, commandContext);
+                                            } else {
+                                                // issue credit so that application(s) can send the next command
+                                                commandContext.reject(getErrorCondition(result.cause()), 1);
+                                                metrics.reportCommand(
+                                                        command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                                                        tenantObject.getTenantId(),
+                                                        tenantObject,
+                                                        ProcessingOutcome.from(result.cause()),
+                                                        command.getPayloadSize(),
+                                                        commandSample);
+                                            }
+                                            cancelCommandReceptionTimer(ctx);
+                                            setTtdStatus(ctx, TtdStatus.COMMAND);                                            
+                                            responseReady.tryComplete();
+                                        });
+                            }
+                        } else {
+                            getMetrics().reportCommand(
+                                    command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                                    tenantObject.getTenantId(),
+                                    tenantObject,
+                                    ProcessingOutcome.UNPROCESSABLE,
+                                    command.getPayloadSize(),
+                                    commandSample);
+                            LOG.debug("command message is invalid: {}", command);
+                            commandContext.reject(new ErrorCondition(Constants.AMQP_BAD_REQUEST, "malformed command message"));
+                        }
+                        // we do not issue any new credit because the
+                        // consumer is supposed to deliver a single command
+                        // only per HTTP request
+                    },
+                    remoteDetach -> {
+                        LOG.debug("peer closed command receiver link [tenant-id: {}, device-id: {}]", tenantObject.getTenantId(), deviceId);
+                        // command consumer is closed by closeHandler, no explicit close necessary here
+                    }).map(consumer -> {
+                        if (!responseReady.isComplete()) {
+                            // if the request was not responded already, add a timer for triggering an empty response
+                            addCommandReceptionTimer(ctx, responseReady, ttdSecs);
+                        }
+                        return consumer;
+                    }).recover(t -> {
+                        if (t instanceof ResourceConflictException) {
+                            // another request from the same device that contains
+                            // a TTD value is already being processed
+                            if (HttpUtils.isEmptyNotification(ctx)) {
+                                // no need to forward message downstream
+                                return Future.failedFuture(t);
+                            } else {
+                                // let the other request handle the command (if any)
+                                responseReady.tryComplete();
+                                return Future.succeededFuture();
+                            }
+                        } else {
+                            return Future.failedFuture(t);
+                        }
+                    });
+        }
+    }
+
+    /**
+     * Validate if a command is valid and can be sent as response.
+     * <p>
+     * The default implementation will call {@link Command#isValid()}. Protocol adapters may override this, but should
+     * consider calling the super method.
+     *
+     * @param command The command to validate, will never be {@code null}.
+     * @param currentSpan The current tracing span.
+     * @return {@code true} if the command is valid, {@code false} otherwise.
+     */
+    protected boolean isCommandValid(final Command command, final Span currentSpan) {
+        return command.isValid();
+    }
+
+    /**
+     * Sets a timer to trigger the sending of a (empty) response to a device
+     * if no command has been received from an application within a
+     * given amount of time.
+     * <p>
+     * The created timer's ID is put to the routing context using key {@link #KEY_TIMER_ID}.
+     *
+     * @param ctx The device's currently executing HTTP request.
+     * @param responseReady The future to complete when the time has expired.
+     * @param delaySecs The number of seconds to wait for a command.
+     */
+    private void addCommandReceptionTimer(
+            final RoutingContext ctx,
+            final Future<Void> responseReady,
+            final long delaySecs) {
+
+        final Long timerId = ctx.vertx().setTimer(delaySecs * 1000L, id -> {
+
+            LOG.trace("time to wait [{}s] for command expired [timer id: {}]", delaySecs, id);
+
+            if (responseReady.isComplete()) {
+                // a command has been sent to the device already
+                LOG.trace("response already sent, nothing to do ...");
+            } else {
+                // no command to be sent,
+                // send empty response
+                setTtdStatus(ctx, TtdStatus.EXPIRED);
+                responseReady.complete();
+            }
+        });
+
+        LOG.trace("adding command reception timer [id: {}]", timerId);
+
+        ctx.put(KEY_TIMER_ID, timerId);
+    }
+
+    private void cancelCommandReceptionTimer(final RoutingContext ctx) {
+
+        final Long timerId = ctx.get(KEY_TIMER_ID);
+        if (timerId != null && timerId >= 0) {
+            if (ctx.vertx().cancelTimer(timerId)) {
+                LOG.trace("Cancelled timer id {}", timerId);
+            } else {
+                LOG.debug("Could not cancel timer id {}", timerId);
+            }
+        }
+    }
+
+    /**
+     * Uploads a command response message to Hono.
+     *
+     * @param ctx The routing context of the HTTP request.
+     * @param tenant The tenant of the device from which the command response was received.
+     * @param deviceId The device from which the command response was received.
+     * @param commandRequestId The id of the command that the response has been sent in reply to.
+     * @param responseStatus The HTTP status code that the device has provided in its request to indicate
+     *                       the outcome of processing the command (may be {@code null}).
+     * @throws NullPointerException if ctx, tenant or deviceId are {@code null}.
+     */
+    public final void uploadCommandResponseMessage(
+            final RoutingContext ctx,
+            final String tenant,
+            final String deviceId,
+            final String commandRequestId,
+            final Integer responseStatus) {
+
+        Objects.requireNonNull(ctx);
+        Objects.requireNonNull(tenant);
+        Objects.requireNonNull(deviceId);
+
+        final Buffer payload = ctx.getBody();
+        final String contentType = HttpUtils.getContentType(ctx);
+
+        LOG.debug("processing response to command [tenantId: {}, deviceId: {}, cmd-req-id: {}, status code: {}]",
+                tenant, deviceId, commandRequestId, responseStatus);
+
+        final Device authenticatedDevice = getAuthenticatedDevice(ctx);
+        final Span currentSpan = TracingHelper
+                .buildChildSpan(tracer, TracingHandler.serverSpanContext(ctx), "upload Command response")
+                .ignoreActiveSpan()
+                .withTag(Tags.COMPONENT.getKey(), getTypeName())
+                .withTag(Tags.SPAN_KIND.getKey(), Tags.SPAN_KIND_CLIENT)
+                .withTag(MessageHelper.APP_PROPERTY_TENANT_ID, tenant)
+                .withTag(MessageHelper.APP_PROPERTY_DEVICE_ID, deviceId)
+                .withTag(Constants.HEADER_COMMAND_RESPONSE_STATUS, responseStatus)
+                .withTag(Constants.HEADER_COMMAND_REQUEST_ID, commandRequestId)
+                .withTag(TracingHelper.TAG_AUTHENTICATED.getKey(), authenticatedDevice != null)
+                .start();
+
+        final CommandResponse cmdResponseOrNull = CommandResponse.from(commandRequestId, tenant, deviceId, payload,
+                contentType, responseStatus);
+        final Future<TenantObject> tenantTracker = getTenantConfiguration(tenant, currentSpan.context());
+        final Future<CommandResponse> commandResponseTracker = cmdResponseOrNull != null
+                ? Future.succeededFuture(cmdResponseOrNull)
+                : Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST,
+                        String.format("command-request-id [%s] or status code [%s] is missing/invalid",
+                                commandRequestId, responseStatus)));
+
+        CompositeFuture.all(tenantTracker, commandResponseTracker)
+                .compose(commandResponse -> {
+                    final Future<JsonObject> deviceRegistrationTracker = getRegistrationAssertion(
+                            tenant,
+                            deviceId,
+                            authenticatedDevice,
+                            currentSpan.context());
+                    final Future<Void> tenantValidationTracker = CompositeFuture
+                            .all(isAdapterEnabled(tenantTracker.result()),
+                                    checkMessageLimit(tenantTracker.result(), payload.length()))
+                            .map(ok -> null);
+
+                    return CompositeFuture.all(tenantValidationTracker, deviceRegistrationTracker)
+                            .compose(ok -> sendCommandResponse(tenant, commandResponseTracker.result(),
+                                    currentSpan.context()))
+                            .map(delivery -> {
+                                LOG.trace("delivered command response [command-request-id: {}] to application",
+                                        commandRequestId);
+                                currentSpan.log("delivered command response to application");
+                                metrics.reportCommand(
+                                        Direction.RESPONSE,
+                                        tenant,
+                                        tenantTracker.result(),
+                                        ProcessingOutcome.FORWARDED,
+                                        payload.length(),
+                                        getMicrometerSample(ctx));
+                                ctx.response().setStatusCode(HttpURLConnection.HTTP_ACCEPTED);
+                                ctx.response().end();
+                                return delivery;
+                            });
+                }).otherwise(t -> {
+                    LOG.debug("could not send command response [command-request-id: {}] to application",
+                            commandRequestId, t);
+                    TracingHelper.logError(currentSpan, t);
+                    currentSpan.finish();
+                    metrics.reportCommand(
+                            Direction.RESPONSE,
+                            tenant,
+                            tenantTracker.result(),
+                            ProcessingOutcome.from(t),
+                            payload.length(),
+                            getMicrometerSample(ctx));
+                    ctx.fail(t);
+                    return null;
+                });
+    }
+
+    private static MetricsTags.QoS getQoSLevel(final EndpointType endpoint, final String qosValue) {
+
+        if (endpoint == EndpointType.EVENT) {
+            return QoS.AT_LEAST_ONCE;
+        } else if (qosValue == null) {
+            return MetricsTags.QoS.AT_MOST_ONCE;
+        } else {
+            try {
+                return MetricsTags.QoS.from(Integer.parseInt(qosValue));
+            } catch (final NumberFormatException e) {
+                return MetricsTags.QoS.UNKNOWN;
+            }
         }
     }
 }

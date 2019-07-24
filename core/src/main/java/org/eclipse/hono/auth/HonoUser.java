@@ -1,18 +1,20 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2017 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.auth;
 
 import java.security.Principal;
+import java.time.Instant;
 
 
 /**
@@ -43,4 +45,11 @@ public interface HonoUser extends Principal {
      *         should be considered invalid.
      */
     boolean isExpired();
+
+    /**
+     * Gets the point in time after which this user's authorities should be considered invalid.
+     * 
+     * @return The expiration time.
+     */
+    Instant getExpirationTime();
 }

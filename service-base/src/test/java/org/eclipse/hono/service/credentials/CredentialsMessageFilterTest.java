@@ -1,95 +1,149 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service.credentials;
 
-import io.vertx.proton.ProtonHelper;
-import org.apache.qpid.proton.amqp.Binary;
-import org.apache.qpid.proton.amqp.Symbol;
-import org.apache.qpid.proton.amqp.messaging.AmqpValue;
-import org.apache.qpid.proton.message.Message;
-import org.eclipse.hono.util.CredentialsConstants;
-import org.eclipse.hono.util.MessageHelper;
-import org.eclipse.hono.util.RegistrationConstants;
-import org.eclipse.hono.util.ResourceIdentifier;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import static org.eclipse.hono.util.CredentialsConstants.OPERATION_GET;
-import static org.eclipse.hono.util.MessageHelper.APP_PROPERTY_RESOURCE;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
+import org.apache.qpid.proton.amqp.Binary;
+import org.apache.qpid.proton.amqp.messaging.AmqpValue;
+import org.apache.qpid.proton.amqp.messaging.Data;
+import org.apache.qpid.proton.message.Message;
+import org.eclipse.hono.util.Constants;
+import org.eclipse.hono.util.CredentialsConstants;
+import org.eclipse.hono.util.ResourceIdentifier;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import io.vertx.core.json.JsonObject;
+import io.vertx.proton.ProtonHelper;
 
 /**
  * Test verifying that the filter complies with the credentials message format specification.
  */
 public class CredentialsMessageFilterTest {
 
-    private static final String DEFAULT_TENANT = "DEFAULT_TENANT";
+    private static final JsonObject BILLIE_HASHED_PASSWORD = new JsonObject()
+            .put(CredentialsConstants.FIELD_TYPE, CredentialsConstants.SECRETS_TYPE_HASHED_PASSWORD)
+            .put(CredentialsConstants.FIELD_AUTH_ID, "billie");
 
-    private static final String BILLIE_HASHED_PASSWORD = "{ " +
-            " type: \"hashed-password\"," +
-            " auth-id: \"billie\"" +
-            "}";
+    private ResourceIdentifier target;
 
+    /**
+     * Sets up the fixture.
+     */
+    @BeforeEach
+    public void setUp() {
+        target = ResourceIdentifier.from(CredentialsConstants.CREDENTIALS_ENDPOINT, Constants.DEFAULT_TENANT, null);
+    }
 
+    /**
+     * Verifies that a message that has no body does not pass the filter.
+     */
     @Test
-    public void testVerifyDetectsMissingAmqpValue() {
+    public void testVerifyFailsForMissingBody() {
+
         // GIVEN a valid credentials GET message without an AMQP value
-        final Message msg = givenAMessageHavingProperties(OPERATION_GET);
+        final Message msg = givenAValidMessageWithoutBody(CredentialsConstants.CredentialsAction.get);
 
         // WHEN receiving the message via a link with any tenant
-        final ResourceIdentifier linkTarget = getResourceIdentifier(DEFAULT_TENANT);
+        final boolean filterResult = CredentialsMessageFilter.verify(target, msg);
 
         // THEN message validation fails
-        assertFalse(CredentialsMessageFilter.verify(linkTarget, msg));
+        assertFalse(filterResult);
     }
 
+    /**
+     * Verifies that a message containing a non Data section body
+     * does not pass the filter.
+     */
     @Test
-    public void testVerifySucceedsForValidGetAction() {
-        // GIVEN a credentials message for user billie
-        final Message msg = givenAMessageHavingProperties(OPERATION_GET);
+    public void testVerifyFailsForNonDataSectionBody() {
 
-        msg.setBody(new AmqpValue(new Binary(BILLIE_HASHED_PASSWORD.getBytes())));
+        // GIVEN a message with an unsupported subject
+        final Message msg = givenAValidMessageWithoutBody(CredentialsConstants.CredentialsAction.get);
+        msg.setBody(new AmqpValue(BILLIE_HASHED_PASSWORD.encode()));
         msg.setContentType("application/json");
 
-        // WHEN receiving the message via a link with matching target address
-        final ResourceIdentifier linkTarget = getResourceIdentifier(DEFAULT_TENANT);
+        // WHEN receiving the message via a link with any tenant
+        final boolean filterResult = CredentialsMessageFilter.verify(target, msg);
+
+        // THEN message validation fails
+        assertFalse(filterResult);
+    }
+
+    /**
+     * Verifies that a message that does not contain a message-id nor correlation-id
+     * does not pass the filter.
+     */
+    @Test
+    public void testVerifyFailsForMissingCorrelationId() {
+
+        // GIVEN a message with an unsupported subject
+        final Message msg = ProtonHelper.message();
+        msg.setReplyTo("reply");
+        msg.setBody(new AmqpValue(BILLIE_HASHED_PASSWORD));
+        msg.setContentType("application/json");
+
+        // WHEN receiving the message via a link with any tenant
+        final boolean filterResult = CredentialsMessageFilter.verify(target, msg);
+
+        // THEN message validation fails
+        assertFalse(filterResult);
+    }
+
+    /**
+     * Verifies that a message containing a subject that does not represent
+     * a Credentials API operation does not pass the filter.
+     */
+    @Test
+    public void testVerifyFailsForUnknownAction() {
+
+        // GIVEN a message with an unsupported subject
+        final Message msg = givenAValidMessageWithoutBody(CredentialsConstants.CredentialsAction.unknown);
+        msg.setBody(new AmqpValue(BILLIE_HASHED_PASSWORD));
+        msg.setContentType("application/json");
+
+        // WHEN receiving the message via a link with any tenant
+        final boolean filterResult = CredentialsMessageFilter.verify(target, msg);
+
+        // THEN message validation fails
+        assertFalse(filterResult);
+    }
+
+    /**
+     * Verifies that a valid message passes the filter.
+     */
+    @Test
+    public void testVerifySucceedsForValidGetAction() {
+
+        // GIVEN a credentials message for user billie
+        final Message msg = givenAValidMessageWithoutBody(CredentialsConstants.CredentialsAction.get);
+        msg.setBody(new Data(new Binary(BILLIE_HASHED_PASSWORD.toBuffer().getBytes())));
+        msg.setContentType("application/json");
+
+        // WHEN receiving the message via a link with any tenant
+        final boolean filterResult = CredentialsMessageFilter.verify(target, msg);
 
         // THEN message validation succeeds
-        assertTrue(CredentialsMessageFilter.verify(linkTarget, msg));
-        assertMessageAnnotationsContainProperties(msg, DEFAULT_TENANT);
+        assertTrue(filterResult);
     }
 
-    private void assertMessageAnnotationsContainProperties(final Message msg, final String tenantId) {
-        assertNotNull(msg.getMessageAnnotations());
-        assertThat(msg.getMessageAnnotations().getValue().get(Symbol.valueOf(MessageHelper.APP_PROPERTY_TENANT_ID)),
-                is(tenantId));
-        final ResourceIdentifier expectedResourceIdentifier = getResourceIdentifier(DEFAULT_TENANT);
-        assertThat(msg.getMessageAnnotations().getValue().get(Symbol.valueOf(APP_PROPERTY_RESOURCE)),
-                is(expectedResourceIdentifier.toString()));
-    }
-
-    private ResourceIdentifier getResourceIdentifier(final String tenant) {
-        return ResourceIdentifier.from(CredentialsConstants.CREDENTIALS_ENDPOINT, tenant, null);
-    }
-
-    private ResourceIdentifier getResourceIdentifier(final String tenant, final String device) {
-        return ResourceIdentifier.from(CredentialsConstants.CREDENTIALS_ENDPOINT, tenant, device);
-    }
-
-    private Message givenAMessageHavingProperties(final String action) {
+    private static Message givenAValidMessageWithoutBody(final CredentialsConstants.CredentialsAction action) {
         final Message msg = ProtonHelper.message();
         msg.setMessageId("msg");
         msg.setReplyTo("reply");
-        msg.setSubject(action);
+        msg.setSubject(action.toString());
         return msg;
     }
 }

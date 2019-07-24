@@ -1,21 +1,29 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.amqp;
 
-import java.util.*;
+import java.lang.ref.WeakReference;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.proton.*;
+import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.transport.AmqpError;
 import org.apache.qpid.proton.amqp.transport.Source;
 import org.eclipse.hono.auth.Activity;
@@ -25,13 +33,23 @@ import org.eclipse.hono.service.AbstractServiceBase;
 import org.eclipse.hono.service.auth.AuthorizationService;
 import org.eclipse.hono.service.auth.ClaimsBasedAuthorizationService;
 import org.eclipse.hono.util.Constants;
+import org.eclipse.hono.util.HonoProtonHelper;
 import org.eclipse.hono.util.ResourceIdentifier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 
+import io.vertx.core.AsyncResult;
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
 import io.vertx.ext.healthchecks.HealthCheckHandler;
+import io.vertx.proton.ProtonConnection;
+import io.vertx.proton.ProtonHelper;
+import io.vertx.proton.ProtonLink;
+import io.vertx.proton.ProtonReceiver;
+import io.vertx.proton.ProtonSender;
+import io.vertx.proton.ProtonServer;
+import io.vertx.proton.ProtonServerOptions;
+import io.vertx.proton.ProtonSession;
 import io.vertx.proton.sasl.ProtonSaslAuthenticatorFactory;
 
 /**
@@ -45,8 +63,8 @@ import io.vertx.proton.sasl.ProtonSaslAuthenticatorFactory;
  */
 public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends AbstractServiceBase<T> {
 
-    // <name, node implementation>
     private final Map<String, AmqpEndpoint> endpoints = new HashMap<>();
+
     private ProtonServer server;
     private ProtonServer insecureServer;
     private ProtonSaslAuthenticatorFactory saslAuthenticatorFactory;
@@ -93,7 +111,7 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     @Autowired(required = false)
     public final void addEndpoints(final List<AmqpEndpoint> definedEndpoints) {
         Objects.requireNonNull(definedEndpoints);
-        for (AmqpEndpoint ep : definedEndpoints) {
+        for (final AmqpEndpoint ep : definedEndpoints) {
             addEndpoint(ep);
         }
     }
@@ -186,6 +204,30 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     }
 
     /**
+     * Closes an expired client connection.
+     * <p>
+     * A connection is considered expired if the {@link HonoUser#isExpired()} method
+     * of the user principal attached to the connection returns {@code true}.
+     * 
+     * @param con The client connection.
+     */
+    protected final void closeExpiredConnection(final ProtonConnection con) {
+
+        if (!con.isDisconnected()) {
+            final HonoUser clientPrincipal = Constants.getClientPrincipal(con);
+            if (clientPrincipal != null) {
+                LOG.debug("client's [{}] access token has expired, closing connection", clientPrincipal.getName());
+                con.disconnectHandler(null);
+                con.closeHandler(null);
+                con.setCondition(ProtonHelper.condition(AmqpError.UNAUTHORIZED_ACCESS, "access token expired"));
+                con.close();
+                con.disconnect();
+                publishConnectionClosedEvent(con);
+            }
+        }
+    }
+
+    /**
      * Invoked before binding listeners to the configured socket addresses.
      * <p>
      * Subclasses may override this method to do any kind of initialization work.
@@ -200,12 +242,11 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     private Future<Void> startEndpoints() {
 
         @SuppressWarnings("rawtypes")
+        final
         List<Future> endpointFutures = new ArrayList<>(endpoints.size());
-        for (AmqpEndpoint ep : endpoints.values()) {
+        for (final AmqpEndpoint ep : endpoints.values()) {
             LOG.info("starting endpoint [name: {}, class: {}]", ep.getName(), ep.getClass().getName());
-            Future<Void> endpointFuture = Future.future();
-            endpointFutures.add(endpointFuture);
-            ep.start(endpointFuture);
+            endpointFutures.add(ep.start());
         }
         final Future<Void> startFuture = Future.future();
         CompositeFuture.all(endpointFutures).setHandler(startup -> {
@@ -218,10 +259,30 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
         return startFuture;
     }
 
+    private Future<Void> stopEndpoints() {
+
+        @SuppressWarnings("rawtypes")
+        final
+        List<Future> endpointFutures = new ArrayList<>(endpoints.size());
+        for (final AmqpEndpoint ep : endpoints.values()) {
+            LOG.info("stopping endpoint [name: {}, class: {}]", ep.getName(), ep.getClass().getName());
+            endpointFutures.add(ep.stop());
+        }
+        final Future<Void> stopFuture = Future.future();
+        CompositeFuture.all(endpointFutures).setHandler(shutdown -> {
+            if (shutdown.succeeded()) {
+                stopFuture.complete();
+            } else {
+                stopFuture.fail(shutdown.cause());
+            }
+        });
+        return stopFuture;
+    }
+
     private Future<Void> startInsecureServer() {
 
         if (isInsecurePortEnabled()) {
-            int insecurePort = determineInsecurePort();
+            final int insecurePort = determineInsecurePort();
             final Future<Void> result = Future.future();
             final ProtonServerOptions options = createInsecureServerOptions();
             insecureServer = createProtonServer(options)
@@ -250,7 +311,7 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     private Future<Void> startSecureServer() {
 
         if (isSecurePortEnabled()) {
-            int securePort = determineSecurePort();
+            final int securePort = determineSecurePort();
             final Future<Void> result = Future.future();
             final ProtonServerOptions options = createServerOptions();
             server = createProtonServer(options)
@@ -284,20 +345,28 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     /**
      * Invoked during start up to create options for the proton server instance binding to the secure port.
      * <p>
+     * This default implementation creates options using {@link #createInsecureServerOptions()}
+     * and sets the {@linkplain ServiceConfigProperties#getKeyCertOptions() server's private key and certificate}
+     * and {@linkplain ServiceConfigProperties#getTrustOptions() trust options}.
+     * <p>
      * Subclasses may override this method to set custom options.
      * 
      * @return The options.
      */
     protected ProtonServerOptions createServerOptions() {
-        ProtonServerOptions options = createInsecureServerOptions();
-
+        final ProtonServerOptions options = createInsecureServerOptions();
         addTlsKeyCertOptions(options);
         addTlsTrustOptions(options);
         return options;
     }
 
     /**
-     * Invoked during start up to create options for the proton server instance binding to the insecure port.
+     * Invoked during start up to create options for the proton server instances.
+     * <ul>
+     * <li>The <em>heartbeat</em> interval is set to 10 seconds, i.e. the server will close the
+     * connection to the client if it does not receive any frames for 20 seconds.</li>
+     * <li>The maximum frame size is set to 16kb.</li>
+     * </ul>
      * <p>
      * Subclasses may override this method to set custom options.
      * 
@@ -305,10 +374,9 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      */
     protected ProtonServerOptions createInsecureServerOptions() {
 
-        ProtonServerOptions options = new ProtonServerOptions();
-        options.setHeartbeat(60000); // // close idle connections after two minutes of inactivity
-        options.setReceiveBufferSize(16 * 1024); // 16kb
-        options.setSendBufferSize(16 * 1024); // 16kb
+        final ProtonServerOptions options = new ProtonServerOptions();
+        options.setHeartbeat(10000); // close idle connections after 20 seconds of inactivity
+        options.setMaxFrameSize(16 * 1024); // 16kb
         options.setLogActivity(getConfig().isNetworkDebugLoggingEnabled());
 
         return options;
@@ -317,38 +385,55 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     @Override
     public final Future<Void> stopInternal() {
 
-        Future<Void> shutdownHandler = Future.future();
-        Future<Void> tracker = Future.future();
+        return CompositeFuture.all(stopServer(), stopInsecureServer())
+                .compose(s -> stopEndpoints());
+    }
+
+    private Future<Void> stopServer() {
+
+        final Future<Void> secureTracker = Future.future();
+
         if (server != null) {
-            server.close(tracker.completer());
+            LOG.info("stopping secure AMQP server [{}:{}]", getBindAddress(), getActualPort());
+            server.close(secureTracker);
         } else {
-            LOG.info("service has been already shut down");
-            tracker.complete();
+            secureTracker.complete();
         }
-        tracker.compose(t -> {
-            if (insecureServer != null) {
-                insecureServer.close(shutdownHandler.completer());
-            } else {
-                shutdownHandler.complete();
-            }
-        }, shutdownHandler);
-        return shutdownHandler;
+        return secureTracker;
+    }
+
+    private Future<Void> stopInsecureServer() {
+
+        final Future<Void> insecureTracker = Future.future();
+
+        if (insecureServer != null) {
+            LOG.info("stopping insecure AMQP server [{}:{}]", getInsecurePortBindAddress(), getActualInsecurePort());
+            insecureServer.close(insecureTracker);
+        } else {
+            insecureTracker.complete();
+        }
+        return insecureTracker;
     }
 
     @Override
     protected final int getActualPort() {
-        return (server != null ? server.actualPort() : Constants.PORT_UNCONFIGURED);
+        return server != null ? server.actualPort() : Constants.PORT_UNCONFIGURED;
     }
 
     @Override
     protected final int getActualInsecurePort() {
-        return (insecureServer != null ? insecureServer.actualPort() : Constants.PORT_UNCONFIGURED);
+        return insecureServer != null ? insecureServer.actualPort() : Constants.PORT_UNCONFIGURED;
     }
 
     /**
      * Invoked when an AMQP <em>open</em> frame is received on the secure port.
      * <p>
-     * Configures the AMQP connection for the secure port and provides a basic connection handling.
+     * This method
+     * <ol>
+     * <li>sets the container name</li>
+     * <li>invokes {@link #setRemoteConnectionOpenHandler(ProtonConnection)}</li>
+     * </ol>
+     * <p>
      * Subclasses may override this method to set custom handlers.
      *
      * @param connection The AMQP connection that the frame is supposed to establish.
@@ -361,7 +446,12 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     /**
      * Invoked when an AMQP <em>open</em> frame is received on the insecure port.
      * <p>
-     * Configures the AMQP connection for the insecure port and provides a basic connection handling.
+     * This method
+     * <ol>
+     * <li>sets the container name</li>
+     * <li>invokes {@link #setRemoteConnectionOpenHandler(ProtonConnection)}</li>
+     * </ol>
+     * <p>
      * Subclasses may override this method to set custom handlers.
      *
      * @param connection The AMQP connection that the frame is supposed to establish.
@@ -382,7 +472,7 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      * @param address The unknown target address.
      */
     protected final void handleUnknownEndpoint(final ProtonConnection con, final ProtonLink<?> link, final ResourceIdentifier address) {
-        LOG.info("client [{}] wants to establish link for unknown endpoint [address: {}]",
+        LOG.info("client [container: {}] wants to establish link for unknown endpoint [address: {}]",
                 con.getRemoteContainer(), address);
         link.setCondition(
                 ProtonHelper.condition(
@@ -417,11 +507,12 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      */
     protected void handleReceiverOpen(final ProtonConnection con, final ProtonReceiver receiver) {
         if (receiver.getRemoteTarget().getAddress() == null) {
-            LOG.debug("client [{}] wants to open an anonymous link for sending messages to arbitrary addresses, closing link",
+            LOG.debug("client [container: {}] wants to open an anonymous link for sending messages to arbitrary addresses, closing link ...",
                     con.getRemoteContainer());
-            receiver.setCondition(ProtonHelper.condition(AmqpError.NOT_FOUND.toString(), "anonymous relay not supported")).close();
+            receiver.setCondition(ProtonHelper.condition(AmqpError.NOT_ALLOWED, "anonymous relay not supported"));
+            receiver.close();
         } else {
-            LOG.debug("client [{}] wants to open a link for sending messages [address: {}]",
+            LOG.debug("client [container: {}] wants to open a link [address: {}] for sending messages",
                     con.getRemoteContainer(), receiver.getRemoteTarget());
             try {
                 final ResourceIdentifier targetResource = getResourceIdentifier(receiver.getRemoteTarget().getAddress());
@@ -433,16 +524,19 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
                     getAuthorizationService().isAuthorized(user, targetResource, Activity.WRITE).setHandler(authAttempt -> {
                         if (authAttempt.succeeded() && authAttempt.result()) {
                             Constants.copyProperties(con, receiver);
+                            receiver.setSource(receiver.getRemoteSource());
                             receiver.setTarget(receiver.getRemoteTarget());
                             endpoint.onLinkAttach(con, receiver, targetResource);
                         } else {
                             LOG.debug("subject [{}] is not authorized to WRITE to [{}]", user.getName(), targetResource);
-                            receiver.setCondition(ProtonHelper.condition(AmqpError.UNAUTHORIZED_ACCESS.toString(), "unauthorized")).close();
+                            receiver.setCondition(ProtonHelper.condition(AmqpError.UNAUTHORIZED_ACCESS.toString(), "unauthorized"));
+                            receiver.close();
                         }
                     });
                 }
             } catch (final IllegalArgumentException e) {
                 LOG.debug("client has provided invalid resource identifier as target address", e);
+                receiver.setCondition(ProtonHelper.condition(AmqpError.NOT_FOUND, "no such address"));
                 receiver.close();
             }
         }
@@ -456,7 +550,7 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      */
     protected void handleSenderOpen(final ProtonConnection con, final ProtonSender sender) {
         final Source remoteSource = sender.getRemoteSource();
-        LOG.debug("client [{}] wants to open a link for receiving messages [address: {}]",
+        LOG.debug("client [container: {}] wants to open a link [address: {}] for receiving messages",
                 con.getRemoteContainer(), remoteSource);
         try {
             final ResourceIdentifier targetResource = getResourceIdentifier(remoteSource.getAddress());
@@ -469,31 +563,113 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
                     if (authAttempt.succeeded() && authAttempt.result()) {
                         Constants.copyProperties(con, sender);
                         sender.setSource(sender.getRemoteSource());
+                        sender.setTarget(sender.getRemoteTarget());
                         endpoint.onLinkAttach(con, sender, targetResource);
                     } else {
                         LOG.debug("subject [{}] is not authorized to READ from [{}]", user.getName(), targetResource);
-                        sender.setCondition(ProtonHelper.condition(AmqpError.UNAUTHORIZED_ACCESS.toString(), "unauthorized")).close();
+                        sender.setCondition(ProtonHelper.condition(AmqpError.UNAUTHORIZED_ACCESS.toString(), "unauthorized"));
+                        sender.close();
                     }
                 });
             }
         } catch (final IllegalArgumentException e) {
             LOG.debug("client has provided invalid resource identifier as target address", e);
+            sender.setCondition(ProtonHelper.condition(AmqpError.NOT_FOUND, "no such address"));
             sender.close();
         }
     }
 
-    private void setRemoteConnectionOpenHandler(final ProtonConnection connection) {
-        connection.sessionOpenHandler(remoteOpenSession -> handleSessionOpen(connection, remoteOpenSession));
-        connection.receiverOpenHandler(remoteOpenReceiver -> handleReceiverOpen(connection, remoteOpenReceiver));
-        connection.senderOpenHandler(remoteOpenSender -> handleSenderOpen(connection, remoteOpenSender));
+    /**
+     * Sets default handlers on a connection that has been opened
+     * by a peer.
+     * <p>
+     * This method registers the following handlers
+     * <ul>
+     * <li>sessionOpenHandler - {@link #handleSessionOpen(ProtonConnection, ProtonSession)}</li>
+     * <li>receiverOpenHandler - {@link #handleReceiverOpen(ProtonConnection, ProtonReceiver)}</li>
+     * <li>senderOpenHandler - {@link #handleSenderOpen(ProtonConnection, ProtonSender)}</li>
+     * <li>disconnectHandler - {@link #handleRemoteDisconnect(ProtonConnection)}</li>
+     * <li>closeHandler - {@link #handleRemoteConnectionClose(ProtonConnection, AsyncResult)}</li>
+     * <li>openHandler - {@link #processRemoteOpen(ProtonConnection)}</li>
+     * </ul>
+     * <p>
+     * Subclasses should override this method in order to register service
+     * specific handlers and/or to prevent registration of default handlers.
+     * 
+     * @param connection The connection.
+     */
+    protected void setRemoteConnectionOpenHandler(final ProtonConnection connection) {
+
+        LOG.debug("received connection request from client");
+        connection.sessionOpenHandler(session -> {
+            HonoProtonHelper.setDefaultCloseHandler(session);
+            handleSessionOpen(connection, session);
+        });
+        connection.receiverOpenHandler(receiver -> {
+            HonoProtonHelper.setDefaultCloseHandler(receiver);
+            handleReceiverOpen(connection, receiver);
+        });
+        connection.senderOpenHandler(sender -> {
+            HonoProtonHelper.setDefaultCloseHandler(sender);
+            handleSenderOpen(connection, sender);
+        });
         connection.disconnectHandler(this::handleRemoteDisconnect);
         connection.closeHandler(remoteClose -> handleRemoteConnectionClose(connection, remoteClose));
         connection.openHandler(remoteOpen -> {
-            LOG.debug("client [container: {}, user: {}] connected", connection.getRemoteContainer(), Constants.getClientPrincipal(connection).getName());
-            connection.open();
-            // attach an ID so that we can later inform downstream components when connection is closed
-            connection.attachments().set(Constants.KEY_CONNECTION_ID, String.class, UUID.randomUUID().toString());
+            if (remoteOpen.failed()) {
+                LOG.debug("ignoring peer's open frame containing error", remoteOpen.cause());
+            } else {
+                processRemoteOpen(remoteOpen.result());
+            }
         });
+    }
+
+    /**
+     * Processes a peer's AMQP <em>open</em> frame.
+     * <p>
+     * This default implementation
+     * <ol>
+     * <li>adds a unique connection identifier to the connection's attachments
+     * under key {@link Constants#KEY_CONNECTION_ID}</li>
+     * <li>invokes {@link #processDesiredCapabilities(ProtonConnection, Symbol[])}</li>
+     * <li>sets a timer that closes the connection once the client's token
+     * has expired</li>
+     * <li>sends the AMQP <em>open</em> frame to the peer</li>
+     * </ol>
+     * 
+     * @param connection The connection to open.
+     */
+    protected void processRemoteOpen(final ProtonConnection connection) {
+
+        LOG.debug("processing open frame from client container [{}]", connection.getRemoteContainer());
+        final HonoUser clientPrincipal = Constants.getClientPrincipal(connection);
+        // attach an ID so that we can later inform downstream components when connection is closed
+        connection.attachments().set(Constants.KEY_CONNECTION_ID, String.class, UUID.randomUUID().toString());
+        processDesiredCapabilities(connection, connection.getRemoteDesiredCapabilities());
+        final Duration delay = Duration.between(Instant.now(), clientPrincipal.getExpirationTime());
+        final WeakReference<ProtonConnection> conRef = new WeakReference<>(connection);
+        vertx.setTimer(delay.toMillis(), timerId -> {
+            if (conRef.get() != null) {
+                closeExpiredConnection(conRef.get());
+            }
+        });
+        connection.open();
+        LOG.info("client connected [container: {}, user: {}, token valid until: {}]",
+                connection.getRemoteContainer(), clientPrincipal.getName(), clientPrincipal.getExpirationTime().toString());
+    }
+
+    /**
+     * Processes the capabilities desired by a client in its
+     * AMQP <em>open</em> frame.
+     * <p>
+     * This default implementation does nothing.
+     * 
+     * @param connection The connection being opened by the client.
+     * @param desiredCapabilities The capabilities.
+     */
+    protected void processDesiredCapabilities(
+            final ProtonConnection connection,
+            final Symbol[] desiredCapabilities) {
     }
 
     /**
@@ -505,37 +681,36 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      * @param session The session that is initiated.
      */
     protected void handleSessionOpen(final ProtonConnection con, final ProtonSession session) {
-        LOG.debug("opening new session with client [{}]", con.getRemoteContainer());
-        session.closeHandler(sessionResult -> {
-            if (sessionResult.succeeded()) {
-                sessionResult.result().close();
-            }
-        }).open();
+        LOG.debug("opening new session with client [container: {}]", con.getRemoteContainer());
+        session.open();
     }
 
     /**
-     * Is called whenever a proton connection was closed. The implementation is intentionally empty.
+     * Is called whenever a proton connection was closed.
      * <p>
-     * Subclasses should override this method to publish this as an event on the vertx bus if desired.
+     * Subclasses may override this method to publish this as an event on the vertx bus if desired. If they choose to
+     * override, they must however call this super method as this method forwards the call to
+     * {@link AmqpEndpoint#onConnectionClosed(ProtonConnection)} of all endpoints managed by this instance.
      *
      * @param con The connection that was closed.
      */
     protected void publishConnectionClosedEvent(final ProtonConnection con) {
+        endpoints.values().forEach(endpoint -> endpoint.onConnectionClosed(con));
     }
 
     /**
      * Invoked when a client closes the connection with this server.
      * <p>
-     * The implementation closes and disconnects the connection.
+     * This implementation closes and disconnects the connection.
      *
      * @param con The connection to close.
      * @param res The client's close frame.
      */
     protected void handleRemoteConnectionClose(final ProtonConnection con, final AsyncResult<ProtonConnection> res) {
         if (res.succeeded()) {
-            LOG.debug("client [{}] closed connection", con.getRemoteContainer());
+            LOG.debug("client [container: {}] closed connection", con.getRemoteContainer());
         } else {
-            LOG.debug("client [{}] closed connection with error", con.getRemoteContainer(), res.cause());
+            LOG.debug("client [container: {}] closed connection with error", con.getRemoteContainer(), res.cause());
         }
         con.close();
         con.disconnect();
@@ -548,7 +723,7 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      * @param con The connection that was disconnected.
      */
     protected void handleRemoteDisconnect(final ProtonConnection con) {
-        LOG.debug("client [{}] disconnected", con.getRemoteContainer());
+        LOG.debug("client [container: {}] disconnected", con.getRemoteContainer());
         con.disconnect();
         publishConnectionClosedEvent(con);
     }
@@ -566,7 +741,7 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
     @Override
     public void registerReadinessChecks(final HealthCheckHandler handler) {
 
-        for (AmqpEndpoint ep : endpoints()) {
+        for (final AmqpEndpoint ep : endpoints()) {
             ep.registerReadinessChecks(handler);
         }
     }
@@ -582,8 +757,8 @@ public abstract class AmqpServiceBase<T extends ServiceConfigProperties> extends
      * @param handler The health check handler to register the checks with.
      */
     @Override
-    public void registerLivenessChecks(HealthCheckHandler handler) {
-        for (AmqpEndpoint ep : endpoints()) {
+    public void registerLivenessChecks(final HealthCheckHandler handler) {
+        for (final AmqpEndpoint ep : endpoints()) {
             ep.registerLivenessChecks(handler);
         }
     }

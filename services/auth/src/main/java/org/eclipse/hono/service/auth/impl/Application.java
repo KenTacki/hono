@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth.impl;
 
@@ -28,7 +29,7 @@ import io.vertx.core.Future;
  * a connection that has been authenticated using SASL.
  *
  */
-@ComponentScan(basePackages = "org.eclipse.hono.service.auth")
+@ComponentScan(basePackages = { "org.eclipse.hono.service.auth", "org.eclipse.hono.service.metric" })
 @Configuration
 @EnableAutoConfiguration
 public class Application extends AbstractApplication {
@@ -55,7 +56,7 @@ public class Application extends AbstractApplication {
     @Override
     protected Future<Void> deployRequiredVerticles(final int maxInstances) {
 
-        Future<Void> result = Future.future();
+        final Future<Void> result = Future.future();
         if (authenticationService == null) {
             result.fail("no authentication service implementation configured");
         } else {

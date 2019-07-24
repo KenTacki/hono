@@ -1,9 +1,12 @@
 hono:
   app:
     maxInstances: 1
-    startupTimeout: 65
+    startupTimeout: 90
+  healthCheck:
+    insecurePortBindAddress: 0.0.0.0
+    insecurePort: ${vertx.health.port}
   auth:
-    host: hono-service-auth.hono
+    host: ${hono.auth.host}
     port: 5672
     name: device-registry
     validation:
@@ -12,6 +15,33 @@ hono:
     amqp:
       insecurePortEnabled: true
       insecurePortBindAddress: 0.0.0.0
+    rest:
+      insecurePortEnabled: true
+      insecurePortBindAddress: 0.0.0.0
     svc:
-      signing:
-        sharedSecret: sdgfsdafazufgsdafjhfgsdajfgwhriojsdafjlksdhfgsa8fg452368gdf
+      filename: /etc/hono/device-identities.json
+      saveToFile: false
+      startEmpty: true
+  credentials:
+    svc:
+      filename: /etc/hono/credentials.json
+      maxBcryptIterations: ${max.bcrypt.iterations}
+      saveToFile: false
+      startEmpty: true
+  tenant:
+    svc:
+      filename: /etc/hono/tenants.json
+      saveToFile: false
+      startEmpty: true
+  vertx:
+    maxEventLoopExecuteTime: ${max.event-loop.execute-time}
+
+spring:
+  jmx:
+    enabled: false
+
+management:
+  port: -1
+
+server:
+  port: -1

@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.util;
 
 import java.util.ArrayList;
@@ -29,6 +30,20 @@ import java.util.Objects;
  * <li>the <em>tenant ID</em></li>
  * <li>an (optional) <em>device ID</em></li>
  * </ol>
+ * <p>
+ * The basic scheme is {@code <endpoint>/[tenant]/[device-id]}
+ * <p>
+ * Examples:
+ * <ol>
+ * <li>telemetry/DEFAULT_TENANT/4711</li>
+ * <li>telemetry</li>
+ * <li>telemetry/</li>
+ * <li>telemetry//</li>
+ * <li>telemetry//4711</li>
+ * <li>telemetry/DEFAULT_TENANT</li>
+ * <li>telemetry/DEFAULT_TENANT/</li>
+ * </ol>
+ *
  */
 public final class ResourceIdentifier {
 
@@ -37,24 +52,30 @@ public final class ResourceIdentifier {
     private static final int IDX_RESOURCE_ID = 2;
     private String[] resourcePath;
     private String resource;
+    private String basePath;
 
     private ResourceIdentifier(final String resource, final boolean assumeDefaultTenant) {
+        final String[] path = resource.split("\\/");
+        final List<String> pathSegments = new ArrayList<>(Arrays.asList(path));
         if (assumeDefaultTenant) {
-            String[] path = resource.split("\\/", 2);
-            setResourcePath(new String[]{path[0], Constants.DEFAULT_TENANT, path.length == 2 ? path[1] : null});
-        } else {
-            String[] path = resource.split("\\/", 3);
-            if (path.length == 1) {
-                // no tenant given, leave path "as is"
-                setResourcePath(new String[]{ path[0] });
-            } else {
-                setResourcePath(new String[]{path[0], path[1], path.length == 3 ? path[2] : null});
-            }
+            pathSegments.add(1, Constants.DEFAULT_TENANT);
         }
+        setResourcePath(pathSegments.toArray(new String[pathSegments.size()]));
     }
 
     private ResourceIdentifier(final String endpoint, final String tenantId, final String resourceId) {
         setResourcePath(new String[]{endpoint, tenantId, resourceId});
+    }
+
+    private ResourceIdentifier(final ResourceIdentifier resourceIdentifier, final String tenantId, final String resourceId) {
+        String[] path = resourceIdentifier.getResourcePath();
+        if (path.length < 3) {
+            path = new String[3];
+            path[IDX_ENDPOINT] = resourceIdentifier.getEndpoint();
+        }
+        path[IDX_TENANT_ID] = tenantId;
+        path[IDX_RESOURCE_ID] = resourceId;
+        setResourcePath(path);
     }
 
     private ResourceIdentifier(final String[] path) {
@@ -62,9 +83,9 @@ public final class ResourceIdentifier {
     }
 
     private void setResourcePath(final String[] path) {
-        List<String> pathSegments = new ArrayList<>();
+        final List<String> pathSegments = new ArrayList<>();
         boolean pathContainsNullSegment = false;
-        for (String segment : path) {
+        for (final String segment : path) {
             if (segment == null) {
                 pathContainsNullSegment = true;
             } else if (pathContainsNullSegment) {
@@ -74,27 +95,46 @@ public final class ResourceIdentifier {
             }
         }
         this.resourcePath = pathSegments.toArray(new String[pathSegments.size()]);
+        if (resourcePath.length > IDX_TENANT_ID && resourcePath[IDX_TENANT_ID].length() == 0) {
+            resourcePath[IDX_TENANT_ID] = null;
+        }
+        if (resourcePath.length > IDX_RESOURCE_ID && resourcePath[IDX_RESOURCE_ID].length() == 0) {
+            resourcePath[IDX_RESOURCE_ID] = null;
+        }
         createStringRepresentation();
     }
 
     /**
      * Gets this resource identifier as path segments.
-     * 
+     *
      * @return the segments.
      */
     public String[] toPath() {
         return Arrays.copyOf(resourcePath, resourcePath.length);
     }
 
-    private void createStringRepresentation() {
-        StringBuilder b = new StringBuilder();
-        for (int i = 0; i < resourcePath.length; i++) {
-            b.append(resourcePath[i]);
+    private String createStringRepresentation(final int startIdx) {
+
+        final StringBuilder b = new StringBuilder();
+        for (int i = startIdx; i < resourcePath.length; i++) {
+            if (resourcePath[i] != null) {
+                b.append(resourcePath[i]);
+            }
             if (i < resourcePath.length - 1) {
                 b.append("/");
             }
         }
-        resource = b.toString();
+        return b.toString();
+    }
+
+    private void createStringRepresentation() {
+        resource = createStringRepresentation(0);
+
+        final StringBuilder b = new StringBuilder(getEndpoint());
+        if (getTenantId() != null) {
+            b.append("/").append(getTenantId());
+        }
+        basePath = b.toString();
     }
 
     /**
@@ -104,7 +144,7 @@ public final class ResourceIdentifier {
      * the endpoint, the second segment is used as the tenant ID and the third segment (if present) is used as the
      * device ID.
      * </p>
-     * 
+     *
      * @param resource the resource string to parse.
      * @return the resource identifier.
      * @throws NullPointerException if the given string is {@code null}.
@@ -122,7 +162,7 @@ public final class ResourceIdentifier {
      * the endpoint and the second segment (if present) is used as the device ID. The tenant ID is always set to
      * {@link Constants#DEFAULT_TENANT}.
      * </p>
-     * 
+     *
      * @param resource the resource string to parse.
      * @return the resource identifier.
      * @throws NullPointerException if the given string is {@code null}.
@@ -134,18 +174,32 @@ public final class ResourceIdentifier {
     }
 
     /**
-     * Creates a resource identifier from endpoint, tenantId and optionally resourceId.
+     * Creates a resource identifier for an endpoint, a tenantId and a resourceId.
      *
      * @param endpoint the endpoint of the resource.
-     * @param tenantId the tenant identifier.
-     * @param resourceId the resource identifier, may be {@code null}.
+     * @param tenantId the tenant identifier (may be {@code null}).
+     * @param resourceId the resource identifier (may be {@code null}).
      * @return the resource identifier.
-     * @throws NullPointerException if endpoint or tenantId is {@code null}.
+     * @throws NullPointerException if endpoint is {@code null}.
      */
     public static ResourceIdentifier from(final String endpoint, final String tenantId, final String resourceId) {
         Objects.requireNonNull(endpoint);
-        Objects.requireNonNull(tenantId);
         return new ResourceIdentifier(endpoint, tenantId, resourceId);
+    }
+
+    /**
+     * Creates a resource identifier for an endpoint from an other resource identifier. It uses all data from
+     * the original resource identifier but sets the new tenantId and resourceId.
+     *
+     * @param resourceIdentifier original resource identifier to copy values from.
+     * @param tenantId the tenant identifier (may be {@code null}).
+     * @param resourceId the resource identifier (may be {@code null}).
+     * @return the resource identifier.
+     * @throws NullPointerException if endpoint is {@code null}.
+     */
+    public static ResourceIdentifier from(final ResourceIdentifier resourceIdentifier, final String tenantId, final String resourceId) {
+        Objects.requireNonNull(resourceIdentifier);
+        return new ResourceIdentifier(resourceIdentifier, tenantId, resourceId);
     }
 
     /**
@@ -154,7 +208,7 @@ public final class ResourceIdentifier {
      * The given path will be stripped of any trailing {@code null}
      * segments.
      * </p>
-     * 
+     *
      * @param path the segments of the resource path.
      * @return the resource identifier.
      * @throws NullPointerException if path is {@code null}.
@@ -189,6 +243,10 @@ public final class ResourceIdentifier {
     }
 
     /**
+     * Gets the resourceId part of this identifier.
+     * <p>
+     * E.g. for a resource <em>telemetry/DEFAULT_TENANT/4711</em>, the return value will be <em>4711</em>.
+     *
      * @return the resourceId or {@code null} if not set.
      */
     public String getResourceId() {
@@ -200,12 +258,21 @@ public final class ResourceIdentifier {
     }
 
     /**
+     * Gets a copy of the full resource path of this identifier, including extended elements.
+     *
+     * @return The full resource path.
+     */
+    public String[] getResourcePath() {
+        return Arrays.copyOf(resourcePath, resourcePath.length);
+    }
+
+    /**
      * Gets a string representation of this resource identifier.
      * <p>
      * The string representation consists of all path segments separated by a
      * forward slash ("/").
      * </p>
-     * 
+     *
      * @return the resource id.
      */
     @Override
@@ -213,12 +280,42 @@ public final class ResourceIdentifier {
         return resource;
     }
 
+    /**
+     * Gets a string representation of this resource identifier's <em>endpoint</em> and <em>tenantId</em>.
+     * <p>
+     * E.g. for a resource <em>telemetry/DEFAULT_TENANT/4711</em>, the return value will be
+     * <em>telemetry/DEFAULT_TENANT</em>.
+     *
+     * @return A string consisting of the properties separated by a forward slash.
+     */
+    public String getBasePath() {
+        return basePath;
+    }
+
+    /**
+     * Gets a string representation of the resource identifiers' parts without the base path.
+     * <p>
+     * E.g. for a resource <em>command_response/myTenant/deviceId/some/path</em>, the return value will be
+     * <em>deviceId/some/path</em>.
+     * <p>
+     * If this resource identifier doesn't contain any additional path segments after the base path, an empty string is
+     * returned.
+     *
+     * @return A string with all parts after the base bath.
+     * @see ResourceIdentifier#getBasePath()
+     */
+    public String getPathWithoutBase() {
+        return createStringRepresentation(IDX_RESOURCE_ID);
+    }
+
     @Override
     public boolean equals(final Object o) {
-        if (this == o)
+        if (this == o) {
             return true;
-        if (o == null || getClass() != o.getClass())
+        }
+        if (o == null || getClass() != o.getClass()) {
             return false;
+        }
 
         final ResourceIdentifier that = (ResourceIdentifier) o;
         return resourcePath != null ? Arrays.equals(resourcePath, that.resourcePath) : that.resourcePath == null;

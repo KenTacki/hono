@@ -1,0 +1,77 @@
+hono:
+  app:
+    maxInstances: 1
+    startupTimeout: 120
+  healthCheck:
+    insecurePortBindAddress: 0.0.0.0
+    insecurePort: ${vertx.health.port}
+  amqp:
+    bindAddress: 0.0.0.0
+    insecurePortBindAddress: 0.0.0.0
+    insecurePortEnabled: true
+    keyPath: /etc/hono/certs/amqp-adapter-key.pem
+    certPath: /etc/hono/certs/amqp-adapter-cert.pem
+  messaging:
+    name: 'Hono AMQP Adapter'
+    host: ${hono.amqp-network.host}
+    port: 5673
+    amqpHostname: hono-internal
+    keyPath: /etc/hono/certs/amqp-adapter-key.pem
+    certPath: /etc/hono/certs/amqp-adapter-cert.pem
+    trustStorePath: /etc/hono/certs/trusted-certs.pem
+    linkEstablishmentTimeout: ${link.establishment.timeout}
+    flowLatency: ${flow.latency}
+  registration:
+    name: 'Hono MQTT Adapter'
+    host: ${hono.registration.host}
+    port: 5672 # AMQP port of the device registry
+    username: amqp-adapter@HONO
+    password: amqp-secret
+    linkEstablishmentTimeout: ${link.establishment.timeout}
+    flowLatency: ${flow.latency}
+  credentials:
+    name: 'Hono AMQP Adapter'
+    host: ${hono.registration.host}
+    port: 5672 # AMQP port of the device registry
+    username: amqp-adapter@HONO
+    password: amqp-secret
+    linkEstablishmentTimeout: ${link.establishment.timeout}
+    flowLatency: ${flow.latency}
+  tenant:
+    name: 'Hono AMQP Adapter'
+    host: ${hono.registration.host}
+    port: 5672 # AMQP port of the device registry
+    username: amqp-adapter@HONO
+    password: amqp-secret
+    linkEstablishmentTimeout: ${link.establishment.timeout}
+    flowLatency: ${flow.latency}
+  deviceConnection:
+    name: 'Hono AMQP Adapter'
+    host: ${hono.registration.host}
+    port: 5672 # AMQP port of the device registry
+    username: amqp-adapter@HONO
+    password: amqp-secret
+    linkEstablishmentTimeout: ${link.establishment.timeout}
+    flowLatency: ${flow.latency}
+  command:
+    name: 'Hono AMQP Adapter'
+    host: ${hono.amqp-network.host}
+    port: 5673
+    amqpHostname: hono-internal
+    keyPath: /etc/hono/certs/amqp-adapter-key.pem
+    certPath: /etc/hono/certs/amqp-adapter-cert.pem
+    trustStorePath: /etc/hono/certs/trusted-certs.pem
+    linkEstablishmentTimeout: ${link.establishment.timeout}
+    flowLatency: ${flow.latency}
+  vertx:
+    maxEventLoopExecuteTime: ${max.event-loop.execute-time}
+
+spring:
+  jmx:
+    enabled: false
+
+management:
+  port: -1
+
+server:
+  port: -1

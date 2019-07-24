@@ -1,14 +1,15 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.auth;
 
@@ -33,11 +34,11 @@ public class AuthoritiesImplTest {
     @Test
     public void testFromClaims() {
 
-        Claims claims = Jwts.claims();
+        final Claims claims = Jwts.claims();
         claims.put("r:telemetry/*", "W");
         claims.put("r:registration/DEFAULT_TENANT", "RW");
         claims.put("o:credentials/*:get", "E");
-        Authorities auth = AuthoritiesImpl.from(claims);
+        final Authorities auth = AuthoritiesImpl.from(claims);
         assertTrue(auth.isAuthorized(ResourceIdentifier.fromString("telemetry/tenantA"), Activity.WRITE));
         assertTrue(auth.isAuthorized(ResourceIdentifier.fromString("registration/DEFAULT_TENANT"), Activity.READ));
         assertFalse(auth.isAuthorized(ResourceIdentifier.fromString("registration/tenantA"), Activity.READ));
@@ -51,7 +52,7 @@ public class AuthoritiesImplTest {
     @Test
     public void testIsAuthorizedConsidersWildCards() {
 
-        AuthoritiesImpl authorities = new AuthoritiesImpl()
+        final AuthoritiesImpl authorities = new AuthoritiesImpl()
                 .addOperation("endpoint", "*", "*");
         assertFalse(authorities.isAuthorized(ResourceIdentifier.fromString("other-endpoint/tenant"), "get"));
         assertTrue(authorities.isAuthorized(ResourceIdentifier.fromString("endpoint/tenant"), "get"));

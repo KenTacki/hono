@@ -1,24 +1,27 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.util;
 
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
+import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.engine.Record;
 import org.eclipse.hono.auth.Activity;
 import org.eclipse.hono.auth.Authorities;
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.auth.HonoUserAdapter;
 
 import io.vertx.proton.ProtonConnection;
 import io.vertx.proton.ProtonLink;
@@ -30,14 +33,72 @@ import io.vertx.proton.ProtonLink;
 public final class Constants {
 
     /**
+     * Indicates that an AMQP request cannot be processed due to a perceived client error.
+     */
+    public static final Symbol AMQP_BAD_REQUEST= Symbol.valueOf("hono:bad-request");
+    /**
+     * Indicates that an AMQP connection is closed due to inactivity.
+     */
+    public static final Symbol AMQP_ERROR_INACTIVITY= Symbol.valueOf("hono:inactivity");
+
+    /**
+     * The default separator character for target addresses.
+     */
+    public static final String DEFAULT_PATH_SEPARATOR = "/";
+    /**
      * The name of the default tenant.
      */
     public static final String DEFAULT_TENANT = "DEFAULT_TENANT";
 
     /**
-     * The default number of milliseconds to wait before trying to reconnect to a service.
+     * The type of the AMQP protocol adapter.
      */
-    public static final long DEFAULT_RECONNECT_INTERVAL_MILLIS = 500;
+    public static final String PROTOCOL_ADAPTER_TYPE_AMQP= "hono-amqp";
+    /**
+     * The type of the CoAP protocol adapter.
+     */
+    public static final String PROTOCOL_ADAPTER_TYPE_COAP= "hono-coap";
+    /**
+     * The type of the HTTP protocol adapter.
+     */
+    public static final String PROTOCOL_ADAPTER_TYPE_HTTP= "hono-http";
+    /**
+     * The type of the Eclipse Kura protocol adapter.
+     */
+    public static final String PROTOCOL_ADAPTER_TYPE_KURA= "hono-kura-mqtt";
+    /**
+     * The type of the LoRaWAN protocol adapter.
+     */
+    public static final String PROTOCOL_ADAPTER_TYPE_LORA= "hono-lora";
+    /**
+     * The type of the MQTT protocol adapter.
+     */
+    public static final String PROTOCOL_ADAPTER_TYPE_MQTT= "hono-mqtt";
+    /**
+     * The type of the sigfox protocol adapter.
+     */
+    public static final String PROTOCOL_ADAPTER_TYPE_SIGFOX = "hono-sigfox";
+
+    /**
+     * The (short) name of the Auth Server component.
+     */
+    public static final String SERVICE_NAME_AUTH = "hono-auth";
+    /**
+     * The (short) name of the Device Registry component.
+     */
+    public static final String SERVICE_NAME_DEVICE_REGISTRY = "hono-registry";
+
+    /**
+     * The "QoS-Level" request header indicating the quality of service level supported by the HTTP Adapter.
+     * The HTTP adapter supports QoS level AT_LEAST_ONCE when uploading telemetry messages.
+     */
+    public static final String HEADER_QOS_LEVEL = "QoS-Level";
+
+    /**
+     * The AMQP capability indicating support for validating registration assertions
+     * issued by a Device Registration service.
+     */
+    public static final Symbol CAP_REG_ASSERTION_VALIDATION = Symbol.valueOf("hono-reg-assertion");
 
     /**
      * The key that an authenticated client's principal is stored under in a {@code ProtonConnection}'s
@@ -56,20 +117,13 @@ public final class Constants {
     public static final String EVENT_BUS_ADDRESS_CONNECTION_CLOSED = "hono.connection.closed";
 
     /**
-     * The default separator character for target addresses.
+     * The AMQP 1.0 port defined by IANA for unencrypted connections.
      */
-    public static final String DEFAULT_PATH_SEPARATOR = "/";
-
+    public static final int PORT_AMQP = 5672;
     /**
      * The AMQP 1.0 port defined by IANA for TLS encrypted connections.
      */
     public static final int PORT_AMQPS = 5671;
-
-    /**
-     * The AMQP 1.0 port defined by IANA for unencrypted connections.
-     */
-    public static final int PORT_AMQP = 5672;
-
     /**
      * Default value for a port that is not explicitly configured.
      */
@@ -84,17 +138,14 @@ public final class Constants {
      * The qualifier to use for referring to AMQP based components.
      */
     public static final String QUALIFIER_AMQP = "amqp";
-
     /**
      * The qualifier to use for referring to components scoped to the AMQP 1.0 messaging network.
      */
     public static final String QUALIFIER_DOWNSTREAM = "downstream";
-
     /**
-     * The qualifier to use for referring to the Hono Messaging component.
+     * The qualifier to use for referring to the AMQP Messaging Network.
      */
     public static final String QUALIFIER_MESSAGING = "messaging";
-
     /**
      * The qualifier to use for referring to REST based components.
      */
@@ -106,9 +157,18 @@ public final class Constants {
     public static final String SUBJECT_ANONYMOUS = "ANONYMOUS";
 
     /**
+     * The field name of JSON payloads containing a device ID.
+     */
+    public static final String JSON_FIELD_DEVICE_ID = "device-id";
+    /**
+     * The field name of JSON payloads containing a tenant ID.
+     */
+    public static final String JSON_FIELD_TENANT_ID = "tenant-id";
+
+    /**
      * The principal to use for anonymous clients.
      */
-    public static final HonoUser PRINCIPAL_ANONYMOUS = new HonoUser() {
+    public static final HonoUser PRINCIPAL_ANONYMOUS = new HonoUserAdapter() {
 
         private final Authorities authorities = new Authorities() {
 
@@ -137,17 +197,37 @@ public final class Constants {
         public Authorities getAuthorities() {
             return authorities;
         }
-
-        @Override
-        public String getToken() {
-            return null;
-        }
-
-        @Override
-        public boolean isExpired() {
-            return false;
-        }
     };
+
+    /**
+     * The header name defined for setting the <em>time till disconnect</em> for device command readiness notification
+     * events.
+     */
+    public static final String HEADER_TIME_TILL_DISCONNECT = "hono-ttd";
+
+    /**
+     * The header name defined for setting the <em>time to deliver</em> for device command readiness notification events.
+     * @deprecated Use {@link #HEADER_TIME_TILL_DISCONNECT} instead
+     */
+    @Deprecated
+    public static final String HEADER_TIME_TIL_DISCONNECT = HEADER_TIME_TILL_DISCONNECT;
+
+    /**
+     * The header name defined for setting the <em>request id</em> for device responses to a command.
+     * This id is sent to the device and has to be used in replies to the command to correlate the original command with
+     * the response.
+     */
+    public static final String HEADER_COMMAND_REQUEST_ID = "hono-cmd-req-id";
+
+    /**
+     * The header name defined for setting the <em>command</em> that is sent to the device.
+     */
+    public static final String HEADER_COMMAND = "hono-command";
+
+    /**
+     * The header name defined for setting the <em>status code</em> of a device respond to a command that was previously received by the device.
+     */
+    public static final String HEADER_COMMAND_RESPONSE_STATUS = "hono-cmd-status";
 
     private Constants() {
     }
@@ -162,10 +242,10 @@ public final class Constants {
     public static HonoUser getClientPrincipal(final Record record) {
 
         if (record != null) {
-            HonoUser client = record.get(KEY_CLIENT_PRINCIPAL, HonoUser.class);
-            return client == null ? Constants.PRINCIPAL_ANONYMOUS : client;
+            final HonoUser client = record.get(KEY_CLIENT_PRINCIPAL, HonoUser.class);
+            return client != null ? client : PRINCIPAL_ANONYMOUS;
         } else {
-            return Constants.PRINCIPAL_ANONYMOUS;
+            return PRINCIPAL_ANONYMOUS;
         }
     }
 
@@ -175,10 +255,10 @@ public final class Constants {
      * @param con The connection to get the principal for.
      * @return The principal representing the authenticated client or {@link Constants#PRINCIPAL_ANONYMOUS}
      *         if the client has not been authenticated.
-     * @throws NullPointerException if con is {@code null}.
+     * @throws NullPointerException if the connection is {@code null}.
      */
     public static HonoUser getClientPrincipal(final ProtonConnection con) {
-        Record attachments = Objects.requireNonNull(con).attachments();
+        final Record attachments = Objects.requireNonNull(con).attachments();
         return getClientPrincipal(attachments);
     }
 
@@ -191,7 +271,7 @@ public final class Constants {
      */
     public static void setClientPrincipal(final ProtonConnection con, final HonoUser principal) {
         Objects.requireNonNull(principal);
-        Record attachments = Objects.requireNonNull(con).attachments();
+        final Record attachments = Objects.requireNonNull(con).attachments();
         attachments.set(KEY_CLIENT_PRINCIPAL, HonoUser.class, principal);
     }
 

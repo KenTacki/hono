@@ -1,31 +1,32 @@
-/**
- * Copyright (c) 2016, 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 package org.eclipse.hono.service.auth;
 
+import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 
 import javax.security.auth.login.CredentialException;
 
 import org.eclipse.hono.auth.HonoUser;
+import org.eclipse.hono.client.ClientErrorException;
+import org.eclipse.hono.util.AuthenticationConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonObject;
 
 /**
@@ -65,18 +66,18 @@ public abstract class AbstractHonoAuthenticationService<T> extends BaseAuthentic
 
         if (AuthenticationConstants.MECHANISM_PLAIN.equals(mechanism)) {
 
-            byte[] saslResponse = authRequest.getBinary(AuthenticationConstants.FIELD_SASL_RESPONSE, new byte[0]);
+            final byte[] saslResponse = authRequest.getBinary(AuthenticationConstants.FIELD_SASL_RESPONSE, new byte[0]);
 
             try {
-                String[] fields = readFields(saslResponse);
-                String authzid = fields[0];
-                String authcid = fields[1];
-                String pwd = fields[2];
+                final String[] fields = AuthenticationConstants.parseSaslResponse(saslResponse);
+                final String authzid = fields[0];
+                final String authcid = fields[1];
+                final String pwd = fields[2];
                 log.debug("processing PLAIN authentication request [authzid: {}, authcid: {}, pwd: *****]", authzid, authcid);
                 verifyPlain(authzid, authcid, pwd, resultHandler);
-            } catch (CredentialException e) {
+            } catch (final CredentialException e) {
                 // response did not contain expected values
-                resultHandler.handle(Future.failedFuture(e));
+                resultHandler.handle(Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST, e)));
             }
 
         } else if (AuthenticationConstants.MECHANISM_EXTERNAL.equals(mechanism)) {
@@ -87,34 +88,8 @@ public abstract class AbstractHonoAuthenticationService<T> extends BaseAuthentic
             verifyExternal(authzid, subject, resultHandler);
 
         } else {
-            resultHandler.handle(Future.failedFuture("unsupported SASL mechanism"));
-        }
-    }
-
-    private String[] readFields(final byte[] buffer) throws CredentialException {
-        List<String> fields = new ArrayList<>();
-        int pos = 0;
-        Buffer b = Buffer.buffer();
-        while (pos < buffer.length) {
-            byte val = buffer[pos];
-            if (val == 0x00) {
-                fields.add(b.toString(StandardCharsets.UTF_8));
-                b = Buffer.buffer();
-            } else {
-                b.appendByte(val);
-            }
-            pos++;
-        }
-        fields.add(b.toString(StandardCharsets.UTF_8));
-
-        if (fields.size() != 3) {
-            throw new CredentialException("client provided malformed PLAIN response");
-        } else if (fields.get(1) == null || fields.get(1).length() == 0) {
-            throw new CredentialException("PLAIN response must contain an authentication ID");
-        } else if(fields.get(2) == null || fields.get(2).length() == 0) {
-            throw new CredentialException("PLAIN response must contain a password");
-        } else {
-            return fields.toArray(new String[3]);
+            resultHandler.handle(Future.failedFuture(
+                    new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST, "unsupported SASL mechanism")));
         }
     }
 
@@ -129,8 +104,8 @@ public abstract class AbstractHonoAuthenticationService<T> extends BaseAuthentic
      * @param authenticationResultHandler The handler to invoke with the authentication result. On successful authentication,
      *                                    the result contains the authenticated user.
      */
-    public abstract void verifyPlain(final String authzid, final String authcid, final String password,
-            final Handler<AsyncResult<HonoUser>> authenticationResultHandler);
+    public abstract void verifyPlain(String authzid, String authcid, String password,
+            Handler<AsyncResult<HonoUser>> authenticationResultHandler);
 
     /**
      * Verifies a Subject DN that has been provided by a client in a SASL EXTERNAL exchange.
@@ -142,7 +117,7 @@ public abstract class AbstractHonoAuthenticationService<T> extends BaseAuthentic
      * @param authenticationResultHandler The handler to invoke with the authentication result. On successful authentication,
      *                                    the result contains the authenticated user.
      */
-    public abstract void verifyExternal(final String authzid, final String subjectDn, final Handler<AsyncResult<HonoUser>> authenticationResultHandler);
+    public abstract void verifyExternal(String authzid, String subjectDn, Handler<AsyncResult<HonoUser>> authenticationResultHandler);
 
     @Override
     public String toString() {

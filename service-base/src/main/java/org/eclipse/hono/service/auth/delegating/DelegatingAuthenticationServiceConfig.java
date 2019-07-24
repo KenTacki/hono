@@ -1,22 +1,23 @@
-/**
- * Copyright (c) 2017 Bosch Software Innovations GmbH.
+/*******************************************************************************
+ * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
  *
- * Contributors:
- *    Bosch Software Innovations GmbH - initial creation
- */
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ *******************************************************************************/
 
 package org.eclipse.hono.service.auth.delegating;
 
 import org.eclipse.hono.connection.ConnectionFactory;
-import org.eclipse.hono.connection.ConnectionFactoryImpl;
+import org.eclipse.hono.connection.impl.ConnectionFactoryImpl;
 import org.eclipse.hono.service.auth.AuthTokenHelper;
 import org.eclipse.hono.service.auth.AuthTokenHelperImpl;
-import org.eclipse.hono.service.auth.AuthenticationConstants;
+import org.eclipse.hono.util.AuthenticationConstants;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -70,7 +71,7 @@ public class DelegatingAuthenticationServiceConfig {
     @Bean
     @Qualifier(AuthenticationConstants.QUALIFIER_AUTHENTICATION)
     public AuthTokenHelper tokenValidator(final Vertx vertx) {
-        AuthenticationServerClientConfigProperties authClientProps = authenticationServiceClientProperties();
+        final AuthenticationServerClientConfigProperties authClientProps = authenticationServiceClientProperties();
         if (!authClientProps.getValidation().isAppropriateForValidating() && authClientProps.getCertPath() != null) {
             // fall back to TLS configuration
             authClientProps.getValidation().setCertPath(authClientProps.getCertPath());
